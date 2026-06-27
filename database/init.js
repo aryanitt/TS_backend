@@ -402,6 +402,70 @@ async function initDatabase() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
 
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS services (
+        id VARCHAR(100) PRIMARY KEY,
+        tenant_id VARCHAR(50) DEFAULT 'default',
+        name VARCHAR(255) NOT NULL,
+        category VARCHAR(50) DEFAULT 'ai',
+        category_label VARCHAR(100),
+        status VARCHAR(50) DEFAULT 'ACTIVE',
+        description TEXT,
+        revenue DECIMAL(14, 2) DEFAULT 0,
+        leads INT DEFAULT 0,
+        converted INT DEFAULT 0,
+        conv_rate DECIMAL(6, 2) DEFAULT 0,
+        price_num DECIMAL(12, 2) DEFAULT 0,
+        price_label VARCHAR(50),
+        icon VARCHAR(50) DEFAULT 'bot',
+        metadata JSON,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS forms (
+        id VARCHAR(100) PRIMARY KEY,
+        tenant_id VARCHAR(50) DEFAULT 'default',
+        name VARCHAR(255) NOT NULL,
+        source VARCHAR(100),
+        source_key VARCHAR(50),
+        status VARCHAR(50) DEFAULT 'ACTIVE',
+        service VARCHAR(255),
+        fields JSON,
+        leads INT DEFAULT 0,
+        revenue DECIMAL(14, 2) DEFAULT 0,
+        conversion INT DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tenant_settings (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        tenant_id VARCHAR(50) NOT NULL UNIQUE,
+        settings_json JSON NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ai_insights (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        tenant_id VARCHAR(50) DEFAULT 'default',
+        context VARCHAR(100) DEFAULT 'dashboard',
+        type VARCHAR(50) DEFAULT 'rec',
+        title VARCHAR(255),
+        body TEXT,
+        tone VARCHAR(50) DEFAULT 'info',
+        metadata JSON,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+
     const indexes = [
       "CREATE INDEX idx_leads_tenant_assignment ON leads(tenant_id, assignment_status, created_at)",
       "CREATE INDEX idx_leads_tenant_assigned ON leads(tenant_id, assigned_to, pipeline_stage)",
@@ -419,6 +483,7 @@ async function initDatabase() {
 
     console.log("Database tables ready (MySQL schema)");
     await seedOperationalData(pool);
+    await seedCatalogData(pool);
   } catch (error) {
     console.error("Database init error:", error.message || error);
     throw error;
@@ -512,6 +577,61 @@ async function seedOperationalData(pool) {
   }
 
   console.log("Seeded demo employees and leads with assignments");
+}
+
+async function seedCatalogData(pool) {
+  const mock = require("../src/data/mockFallback");
+
+  const svcCount = await pool.query(`SELECT COUNT(*) AS c FROM services WHERE tenant_id = 'default'`);
+  if ((svcCount.rows[0]?.c ?? 0) === 0) {
+    for (const svc of mock.SERVICES) {
+      await pool.query(
+        `INSERT INTO services (id, tenant_id, name, category, category_label, status, description, revenue, leads, converted, conv_rate, price_num, price_label, icon, metadata)
+         VALUES ($1, 'default', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        [
+          svc.id, svc.name, svc.category, svc.categoryLabel, svc.status, svc.description,
+          svc.revenue, svc.leads, svc.converted, svc.convRate, svc.priceNum, svc.price, svc.icon,
+          JSON.stringify(svc),
+        ],
+      );
+    }
+    console.log("Seeded services catalog");
+  }
+
+  const formCount = await pool.query(`SELECT COUNT(*) AS c FROM forms WHERE tenant_id = 'default'`);
+  if ((formCount.rows[0]?.c ?? 0) === 0) {
+    for (const form of mock.FORMS) {
+      await pool.query(
+        `INSERT INTO forms (id, tenant_id, name, source, source_key, status, service, fields, leads, revenue, conversion)
+         VALUES ($1, 'default', $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          form.id, form.name, form.source, form.sourceKey, form.status, form.service,
+          JSON.stringify(form.fields || []), form.leads, form.revenue, form.conversion,
+        ],
+      );
+    }
+    console.log("Seeded forms catalog");
+  }
+
+  const settingsCount = await pool.query(`SELECT COUNT(*) AS c FROM tenant_settings WHERE tenant_id = 'default'`);
+  if ((settingsCount.rows[0]?.c ?? 0) === 0) {
+    await pool.query(
+      `INSERT INTO tenant_settings (tenant_id, settings_json) VALUES ('default', $1)`,
+      [JSON.stringify(mock.DEFAULT_SETTINGS)],
+    );
+    console.log("Seeded tenant settings");
+  }
+
+  const insightCount = await pool.query(`SELECT COUNT(*) AS c FROM ai_insights WHERE tenant_id = 'default'`);
+  if ((insightCount.rows[0]?.c ?? 0) === 0) {
+    for (const insight of mock.aiInsights) {
+      await pool.query(
+        `INSERT INTO ai_insights (tenant_id, context, type, title, body, tone) VALUES ('default', 'dashboard', $1, $2, $3, $4)`,
+        [insight.type, insight.title, insight.body, insight.tone],
+      );
+    }
+    console.log("Seeded AI insights");
+  }
 }
 
 module.exports = { initDatabase };

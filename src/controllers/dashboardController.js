@@ -1,210 +1,119 @@
-const getDashboard = (req, res) => {
+const dataService = require("../services/dataService");
+const mock = require("../data/mockFallback");
+
+const getDashboard = async (req, res) => {
+  try {
+    const bundle = await dataService.getDashboardBundle();
     res.json({
-      profile: {
-        name: "Alex",
-        role: "Sales Manager",
-        growth: "18.4%"
-      },
-  
-      kpis: {
-        revenue: "₹7.9L",
-        cashCollected: "₹5.1L",
-        conversionRate: "24%",
-        qualifiedLeads: 721,
-        pipelineValue: "₹12.4L"
-      },
-  
-      insights: [
-        "12 leads inactive for 7+ days",
-        "3 negotiations stuck",
-        "Conversion improved by 14%"
-      ],
-  
-      metrics: {
-        avgResponseTime: "2h",
-        customerSatisfaction: "92%",
-        meetingsScheduled: 48,
-        tasksCompleted: 121
-      },
-  
-      leaderboard: [
-        {
-          name: "Priya",
-          sales: "₹2.4L"
-        },
-        {
-          name: "Rahul",
-          sales: "₹1.9L"
-        },
-        {
-          name: "Aman",
-          sales: "₹1.5L"
-        }
-      ],
-  
-      notifications: [
-        "New lead assigned",
-        "Meeting scheduled at 4 PM",
-        "Target achieved for May"
-      ],
-  
-      activity: [
-        "Lead moved to negotiation",
-        "Invoice generated",
-        "Follow-up completed"
-      ]
+      success: true,
+      source: bundle.source,
+      profile: { name: "Alex", role: "Sales Manager", growth: "18.4%" },
+      filterData: bundle.filterData,
+      revenueSeries: bundle.revenueSeries,
+      aiInsights: bundle.aiInsights,
+      kpis: bundle.filterData?.week?.kpis,
+      insights: bundle.filterData?.week?.insights?.map((i) => i.text) || [],
+      leaderboard: bundle.filterData?.week?.leaderboard,
+      metrics: bundle.filterData?.week?.metrics,
     });
-  };
-  
-  const getRevenue = (req, res) => {
+  } catch (err) {
     res.json({
-      revenue: [
-        {
-          month: "Jan",
-          revenue: 120000,
-          forecast: 100000
-        },
-        {
-          month: "Feb",
-          revenue: 180000,
-          forecast: 160000
-        },
-        {
-          month: "Mar",
-          revenue: 240000,
-          forecast: 210000
-        },
-        {
-          month: "Apr",
-          revenue: 310000,
-          forecast: 280000
-        },
-        {
-          month: "May",
-          revenue: 390000,
-          forecast: 350000
-        },
-        {
-          month: "Jun",
-          revenue: 460000,
-          forecast: 420000
-        }
-      ]
+      success: true,
+      source: "mock",
+      filterData: mock.FILTER_DATA,
+      revenueSeries: mock.revenueSeries,
+      aiInsights: mock.aiInsights,
     });
-  };
-  
-  const getPipeline = (req, res) => {
+  }
+};
+
+const getRevenue = async (req, res) => {
+  const bundle = await dataService.getDashboardBundle();
+  res.json({ revenue: bundle.revenueSeries, revenueSeries: bundle.revenueSeries });
+};
+
+const getPipeline = async (req, res) => {
+  const { leads, source } = await dataService.getPipelineLeads();
+  const stageCounts = {};
+  leads.forEach((l) => {
+    stageCounts[l.stage] = (stageCounts[l.stage] || 0) + 1;
+  });
+  res.json({
+    source,
+    pipeline: Object.entries(stageCounts).map(([stage, count]) => ({ stage, count })),
+    leads,
+    serviceBreakdown: mock.FILTER_DATA.week ? [] : [],
+  });
+};
+
+const getPipelineLeads = async (req, res) => {
+  const result = await dataService.getPipelineLeads();
+  res.json(result);
+};
+
+const patchPipelineLead = async (req, res) => {
+  try {
+    const { stage } = req.body;
+    await dataService.updatePipelineLeadStage(req.params.id, stage);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const getRecentLeads = async (req, res) => {
+  const { leads } = await dataService.getPipelineLeads();
+  if (leads.length) {
     res.json({
-      pipeline: [
-        {
-          stage: "New Leads",
-          count: 120
-        },
-        {
-          stage: "Qualified",
-          count: 80
-        },
-        {
-          stage: "Proposal",
-          count: 42
-        },
-        {
-          stage: "Closed",
-          count: 19
-        }
-      ],
-  
-      serviceBreakdown: [
-        {
-          name: "POSH Training",
-          revenue: 35
-        },
-        {
-          name: "Compliance",
-          revenue: 25
-        },
-        {
-          name: "Corporate Training",
-          revenue: 40
-        }
-      ]
+      leads: leads.slice(0, 10).map((l) => ({
+        id: l._dbId || l.id,
+        name: l.name,
+        company: l.company,
+        status: l.stage,
+        revenue: dataService.formatINR(l.value),
+      })),
     });
-  };
-  
-  const getRecentLeads = (req, res) => {
-    res.json({
-      leads: [
-        {
-          id: 1,
-          name: "Rohit Sharma",
-          company: "Infosys",
-          status: "Qualified",
-          revenue: "₹1.2L"
-        },
-        {
-          id: 2,
-          name: "Neha Verma",
-          company: "TCS",
-          status: "Proposal Sent",
-          revenue: "₹90K"
-        },
-        {
-          id: 3,
-          name: "Amit Singh",
-          company: "Wipro",
-          status: "Negotiation",
-          revenue: "₹2.1L"
-        }
-      ]
-    });
-  };
-  
-  const getLeadById = (req, res) => {
-    const { id } = req.params;
-  
+    return;
+  }
+  res.json({
+    leads: [
+      { id: 1, name: "Rohit Sharma", company: "Infosys", status: "Qualified", revenue: "₹1.2L" },
+    ],
+  });
+};
+
+const getLeadById = async (req, res) => {
+  const { id } = req.params;
+  const { leads } = await dataService.getPipelineLeads();
+  const found = leads.find((l) => String(l._dbId || l.id) === String(id));
+  if (found) {
     res.json({
       id,
-  
-      company: "Infosys",
-  
-      contact: "Rohit Sharma",
-  
-      email: "rohit@infosys.com",
-  
-      phone: "+91 9876543210",
-  
-      revenue: "₹1.2L",
-  
-      stage: "Qualified",
-  
-      priority: "High",
-  
-      assignee: "Priya",
-  
-      followUp: "Tomorrow 4 PM",
-  
-      notes:
-        "Client is interested in enterprise POSH training package. Waiting for final approval.",
-  
-      aiSuggestions: [
-        "Send enterprise case study",
-        "Schedule technical demo",
-        "Follow up within 48 hours"
-      ],
-  
-      timeline: [
-        "Lead created",
-        "Discovery call completed",
-        "Proposal shared",
-        "Follow-up pending"
-      ]
+      company: found.company,
+      contact: found.name,
+      email: found.email,
+      phone: found.phone,
+      revenue: dataService.formatINR(found.value),
+      stage: found.stage,
+      priority: found.priority,
+      aiSuggestions: mock.aiInsights.map((i) => i.title),
     });
-  };
-  
-  module.exports = {
-    getDashboard,
-    getRevenue,
-    getPipeline,
-    getRecentLeads,
-    getLeadById
-  };
+    return;
+  }
+  res.json({
+    id,
+    company: "Infosys",
+    contact: "Rohit Sharma",
+    aiSuggestions: mock.aiInsights.map((i) => i.title),
+  });
+};
+
+module.exports = {
+  getDashboard,
+  getRevenue,
+  getPipeline,
+  getPipelineLeads,
+  patchPipelineLead,
+  getRecentLeads,
+  getLeadById,
+};

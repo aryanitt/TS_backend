@@ -6,6 +6,8 @@ const {
   getDashboard,
   getRevenue,
   getPipeline,
+  getPipelineLeads,
+  patchPipelineLead,
   getRecentLeads,
   getLeadById
 } = require("../controllers/dashboardController");
@@ -22,6 +24,9 @@ router.get("/revenue", getRevenue);
 // PIPELINE + SERVICE BREAKDOWN
 router.get("/pipeline", getPipeline);
 
+// KANBAN LEADS
+router.get("/pipeline/leads", getPipelineLeads);
+router.patch("/pipeline/leads/:id", patchPipelineLead);
 
 // RECENT LEADS
 router.get("/leads/recent", getRecentLeads);
