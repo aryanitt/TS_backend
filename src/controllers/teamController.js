@@ -4,6 +4,79 @@ const {
   createNotification,
 } = require("./activityController");
 
+const normalizeStatus = (value) => String(value || "").toLowerCase().trim();
+
+function computeLeadStats(leads) {
+  const isConverted = (l) =>
+    normalizeStatus(l.pipeline_stage) === "converted" ||
+    normalizeStatus(l.status) === "converted";
+  const isQualified = (l) => {
+    const stage = normalizeStatus(l.pipeline_stage);
+    const status = normalizeStatus(l.status);
+    return (
+      ["qualified", "proposal", "proposal sent", "negotiation", "converted", "warm", "hot"].some((k) => stage.includes(k)) ||
+      ["qualified", "warm lead", "hot lead", "proposal sent", "negotiation", "converted"].includes(status)
+    );
+  };
+  const isMeeting = (l) => {
+    const stage = normalizeStatus(l.pipeline_stage);
+    const status = normalizeStatus(l.status);
+    return status.includes("meeting") || ["proposal", "proposal sent", "negotiation"].includes(stage);
+  };
+  const isContacted = (l) =>
+    !["new", "new lead"].includes(normalizeStatus(l.pipeline_stage)) &&
+    normalizeStatus(l.status) !== "new lead";
+
+  const convertedLeads = leads.filter(isConverted);
+  return {
+    totalLeads: leads.length,
+    qualified: leads.filter(isQualified).length,
+    totalMeetings: leads.filter(isMeeting).length,
+    converted: convertedLeads.length,
+    revenue: convertedLeads.reduce(
+      (sum, l) => sum + (Number(l.expected_revenue ?? l.revenue) || 0),
+      0,
+    ),
+    contacted: leads.filter(isContacted).length,
+    followUps: leads.filter((l) =>
+      ["not interested", "not attending", "call back later"].includes(normalizeStatus(l.status)),
+    ).length,
+  };
+}
+
+function buildLeadFunnel(stats) {
+  return [
+    { name: "Assigned", value: stats.totalLeads },
+    { name: "Contacted", value: stats.contacted },
+    { name: "Qualified", value: stats.qualified },
+    { name: "Meeting", value: stats.totalMeetings },
+    { name: "Converted", value: stats.converted },
+  ];
+}
+
+function mapLeadRow(row) {
+  return {
+    id: row.id,
+    lead_name: row.lead_name,
+    business_name: row.business_name || row.company_name || "",
+    email: row.email,
+    phone: row.phone,
+    city: row.city,
+    form_name: row.form_name,
+    temperature: row.temperature,
+    expected_revenue: row.expected_revenue,
+    revenue: row.expected_revenue,
+    pipeline_stage: row.pipeline_stage,
+    status: row.status,
+    submitted_time: row.submitted_time || row.created_at,
+    updated_at: row.updated_at,
+    source: row.source,
+    priority: row.priority,
+    win_probability: row.win_probability,
+    follow_up: row.follow_up || row.next_follow_up_at,
+  };
+}
+
 const getTeamDashboard = (req, res) => {
   res.json({
     kpis: {
@@ -114,11 +187,20 @@ const getEmployees = async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT e.*,
+        m.name AS manager_name,
         (SELECT COUNT(*) FROM leads l WHERE l.assigned_to = e.id AND l.is_deleted = 0) AS leads,
         (SELECT COUNT(*) FROM leads l
           WHERE l.assigned_to = e.id AND l.is_deleted = 0
-            AND (l.pipeline_stage = 'Converted' OR l.status = 'Converted')) AS conv
+            AND (l.pipeline_stage = 'Converted' OR l.status = 'Converted')) AS conv,
+        (SELECT COUNT(*) FROM leads l
+          WHERE l.assigned_to = e.id AND l.is_deleted = 0
+            AND LOWER(COALESCE(l.pipeline_stage, '')) NOT IN ('new', 'new lead')
+            AND LOWER(COALESCE(l.status, '')) <> 'new lead') AS contacted,
+        (SELECT COALESCE(SUM(l.expected_revenue), 0) FROM leads l
+          WHERE l.assigned_to = e.id AND l.is_deleted = 0
+            AND (l.pipeline_stage = 'Converted' OR l.status = 'Converted')) AS revenue
        FROM employees e
+       LEFT JOIN employees m ON m.id = e.manager_id
        ORDER BY e.id DESC`,
     );
     res.json({
@@ -208,140 +290,144 @@ const createEmployee = async (req, res) => {
   }
 };
 
-const getEmployeeDetails = (req, res) => {
-  const { id } = req.params;
+const getEmployeeDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      `SELECT e.*, m.name AS manager_name
+       FROM employees e
+       LEFT JOIN employees m ON m.id = e.manager_id
+       WHERE e.id = $1`,
+      [id],
+    );
 
-  res.json({
-    id,
-    name: "Priya Sharma",
-    role: "Sales Manager",
-    department: "Sales",
-    email: "priya@company.com",
-    phone: "+91 9876543210",
-    performance: "92%",
-    attendance: "96%",
-    revenueGenerated: "₹4.2L"
-  });
+    if (!result.rows.length) {
+      return res.status(404).json({ success: false, message: "Employee not found" });
+    }
+
+    const employee = result.rows[0];
+    const leadResult = await pool.query(
+      `SELECT id, lead_name, company_name, email, phone, city, form_name, temperature,
+              expected_revenue, pipeline_stage, status, created_at, updated_at, source,
+              priority, win_probability, next_follow_up_at
+       FROM leads
+       WHERE assigned_to = $1 AND is_deleted = 0
+       ORDER BY updated_at DESC`,
+      [id],
+    );
+
+    const leads = leadResult.rows.map(mapLeadRow);
+    const stats = computeLeadStats(leads);
+    const totalLeads = stats.totalLeads || 0;
+    const conversionRate = totalLeads ? Number(((stats.converted / totalLeads) * 100).toFixed(1)) : 0;
+    const qualificationRate = totalLeads ? Math.round((stats.qualified / totalLeads) * 100) : 0;
+    const pickupRate = totalLeads ? Math.round((stats.contacted / totalLeads) * 100) : 0;
+    const followUpQuality = totalLeads
+      ? Math.max(0, Math.min(99, Math.round(100 - (stats.followUps / totalLeads) * 100)))
+      : 0;
+
+    res.json({
+      success: true,
+      employee: {
+        ...employee,
+        manager_name: employee.manager_name || null,
+        stats,
+        achieved: {
+          calls: stats.contacted || stats.totalLeads,
+          qualifiedLeads: stats.qualified,
+          meetings: stats.totalMeetings,
+          cash: stats.revenue,
+        },
+        performance: {
+          responseTimeMin: 1.8,
+          pickupRate,
+          qualificationRate,
+          objectionHandling: Math.min(99, Math.round(qualificationRate * 0.95) || 0),
+          conversionRate,
+          followUpQuality: followUpQuality || pickupRate,
+        },
+        funnel: buildLeadFunnel(stats),
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching employee details:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch employee details",
+      error: error.message,
+    });
+  }
 };
 
 const getEmployeeLeads = async (req, res) => {
   try {
-    const { employee_name } = req.query;
+    const { employee_name, employee_id } = req.query;
+    let empId = employee_id ? Number(employee_id) : null;
+    let empName = employee_name ? String(employee_name).trim() : "";
 
-    if (!employee_name) {
-      return res.json({ success: true, leads: [], stats: {} });
+    if (!empId && empName) {
+      const empResult = await pool.query(
+        `SELECT id, name FROM employees WHERE LOWER(name) = LOWER($1) LIMIT 1`,
+        [empName],
+      );
+      if (empResult.rows.length) {
+        empId = empResult.rows[0].id;
+        empName = empResult.rows[0].name;
+      }
     }
 
-    // Fetch all leads for this employee
-    const result = await pool.query(
-      `SELECT 
-          id,
-          lead_name,
-          business_name,
-          email,
-          phone,
-          city,
-          form_name,
-          temperature,
-          expected_revenue,
-          pipeline_stage,
-          status,
-          submitted_time,
-          updated_at,
-          round_robin_code,
-          source,
-          employee_name
-       FROM emp_leads
-       WHERE LOWER(employee_name) = LOWER($1)
-          OR LOWER(employee_name) LIKE LOWER($2)
-       ORDER BY updated_at DESC`,
-      [
-        employee_name,
-        `${employee_name.split(" ")[0]}%`,
-      ]
-    );
+    if (!empId && !empName) {
+      return res.json({ success: true, leads: [], stats: {}, activity: [], funnel: [] });
+    }
 
-    const leads = result.rows;
+    let leads = [];
 
-    // ── Calculate KPI stats from real data ──────────────────────────────
-   const normalize = s => (s || "").toLowerCase().trim();
+    if (empId) {
+      const result = await pool.query(
+        `SELECT id, lead_name, company_name, email, phone, city, form_name, temperature,
+                expected_revenue, pipeline_stage, status, created_at, updated_at, source,
+                priority, win_probability, next_follow_up_at
+         FROM leads
+         WHERE assigned_to = $1 AND is_deleted = 0
+         ORDER BY updated_at DESC`,
+        [empId],
+      );
+      leads = result.rows.map(mapLeadRow);
+    }
 
-const stats = {
-  totalLeads:    leads.length,
+    if (!leads.length && empName) {
+      const legacy = await pool.query(
+        `SELECT id, lead_name, business_name, email, phone, city, form_name, temperature,
+                expected_revenue, pipeline_stage, status, submitted_time, updated_at,
+                source, employee_name
+         FROM emp_leads
+         WHERE LOWER(employee_name) = LOWER($1)
+            OR LOWER(employee_name) LIKE LOWER($2)
+         ORDER BY updated_at DESC`,
+        [empName, `${empName.split(" ")[0]}%`],
+      );
+      leads = legacy.rows.map(mapLeadRow);
+    }
 
-  // Qualified = Warm Lead, Hot Lead
-  qualified:     leads.filter(l =>
-                   normalize(l.status) === "warm lead" ||
-                   normalize(l.status) === "hot lead"
-                 ).length,
-
-  // Meetings = meeting scheduled, meeting booked, meeting done
-  totalMeetings: leads.filter(l =>
-                   normalize(l.status).includes("meeting")
-                 ).length,
-
-  // Converted
-  converted:     leads.filter(l =>
-                   normalize(l.status) === "converted"
-                 ).length,
-
-  // Follow-ups = not interested, not attending, call back later
-  followUps:     leads.filter(l =>
-                   normalize(l.status) === "not interested"  ||
-                   normalize(l.status) === "not attending"   ||
-                   normalize(l.status) === "call back later"
-                 ).length,
-
-  // Extra breakdowns (useful for future)
-  newLeads:      leads.filter(l => normalize(l.status) === "new lead").length,
-  warmLeads:     leads.filter(l => normalize(l.status) === "warm lead").length,
-  hotLeads:      leads.filter(l => normalize(l.status) === "hot lead").length,
-  callBackLater: leads.filter(l => normalize(l.status) === "call back later").length,
-};
-
-    // ── Activity timeline — last 10 status changes ───────────────────────
+    const stats = computeLeadStats(leads);
     const activity = leads
-      .filter(l => l.updated_at && l.status)
+      .filter((l) => l.updated_at && l.status)
       .slice(0, 10)
-      .map(l => ({
-        lead_name:    l.lead_name,
-        status:       l.status,
-        time:         l.updated_at,
-        business:     l.business_name || "",
+      .map((l) => ({
+        lead_name: l.lead_name,
+        status: l.status,
+        time: l.updated_at,
+        business: l.business_name || "",
       }));
+    const funnel = buildLeadFunnel(stats);
 
-    // ── Funnel — ordered by pipeline stage ───────────────────────────────
-   const funnel = [
-  { 
-    name: "Assigned",  
-    value: leads.length 
-  },
-  { 
-    name: "Contacted", 
-    value: leads.filter(l => normalize(l.status) !== "new lead").length 
-  },
-  { 
-    name: "Warm/Hot",  
-    value: stats.qualified 
-  },
-  { 
-    name: "Meeting",   
-    value: stats.totalMeetings 
-  },
-  { 
-    name: "Converted", 
-    value: stats.converted 
-  },
-];
-
-    res.json({ 
-      success: true, 
-      leads, 
-      stats, 
+    res.json({
+      success: true,
+      leads,
+      stats,
       activity,
       funnel,
     });
-
   } catch (error) {
     console.error("Error fetching employee leads:", error);
     res.status(500).json({
