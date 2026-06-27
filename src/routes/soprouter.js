@@ -13,7 +13,7 @@ const {
   addComment,
   updateComment,
   deleteComment,
-} = require("../controllers/sopcontroller");
+} = require("../controllers/sopController");
 
 
 
