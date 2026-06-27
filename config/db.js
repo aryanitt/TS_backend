@@ -13,7 +13,6 @@ function env(name) {
 }
 
 function logDbEnv(label = "mysql env") {
-  const password = env("DB_PASSWORD");
   const host = resolveDbHost(env("DB_HOST"));
 
   console.error(`[startup] ${label}`, JSON.stringify({
@@ -23,8 +22,7 @@ function logDbEnv(label = "mysql env") {
     DB_USER: env("DB_USER") || "(unset)",
     DB_NAME: env("DB_NAME") || "(unset)",
     DB_SSL: env("DB_SSL") || "(unset)",
-    DB_PASSWORD: password || "(unset)",
-    DB_PASSWORD_length: password ? password.length : 0,
+    DB_PASSWORD: env("DB_PASSWORD") ? "(set)" : "(unset)",
   }));
 }
 

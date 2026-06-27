@@ -55,16 +55,6 @@ function mountFullApp() {
 
 function startBackgroundTasks() {
   try {
-    console.error("[startup] mysql env before connect", JSON.stringify({
-      DB_HOST: process.env.DB_HOST?.trim() || "(unset)",
-      DB_PORT: process.env.DB_PORT?.trim() || "(unset)",
-      DB_USER: process.env.DB_USER?.trim() || "(unset)",
-      DB_NAME: process.env.DB_NAME?.trim() || "(unset)",
-      DB_SSL: process.env.DB_SSL?.trim() || "(unset)",
-      DB_PASSWORD: process.env.DB_PASSWORD?.trim() || "(unset)",
-      DB_PASSWORD_length: process.env.DB_PASSWORD?.trim()?.length ?? 0,
-    }));
-
     const { initDatabase } = require("./database/init");
     const { checkPgConnection } = require("./src/middleware/pgReady");
     const { startSchedulers } = require("./src/jobs/schedulers");
