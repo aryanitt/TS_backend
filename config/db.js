@@ -12,6 +12,22 @@ function env(name) {
   return typeof value === "string" ? value.trim() : value;
 }
 
+function logDbEnv(label = "mysql env") {
+  const password = env("DB_PASSWORD");
+  const host = resolveDbHost(env("DB_HOST"));
+
+  console.error(`[startup] ${label}`, JSON.stringify({
+    DB_HOST_raw: env("DB_HOST") || "(unset)",
+    DB_HOST_resolved: host,
+    DB_PORT: Number(env("DB_PORT") || 3306),
+    DB_USER: env("DB_USER") || "(unset)",
+    DB_NAME: env("DB_NAME") || "(unset)",
+    DB_SSL: env("DB_SSL") || "(unset)",
+    DB_PASSWORD: password || "(unset)",
+    DB_PASSWORD_length: password ? password.length : 0,
+  }));
+}
+
 const pool = mysql.createPool({
   host: resolveDbHost(env("DB_HOST")),
   port: Number(env("DB_PORT") || 3306),
@@ -25,6 +41,8 @@ const pool = mysql.createPool({
   ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : undefined,
   dateStrings: false,
 });
+
+logDbEnv("mysql env used by pool");
 
 const coreQuery = promisify(pool.pool.query.bind(pool.pool));
 
@@ -181,3 +199,4 @@ pool.query = query;
 module.exports = pool;
 module.exports.query = query;
 module.exports.pool = pool;
+module.exports.logDbEnv = logDbEnv;
