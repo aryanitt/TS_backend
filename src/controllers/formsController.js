@@ -14,4 +14,13 @@ const createForm = async (req, res) => {
   }
 };
 
-module.exports = { listForms, createForm };
+const updateForm = async (req, res) => {
+  try {
+    const result = await dataService.updateForm(dataService.TENANT, req.params.id, req.body);
+    res.json(result);
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ success: false, message: err.message });
+  }
+};
+
+module.exports = { listForms, createForm, updateForm };

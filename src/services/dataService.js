@@ -457,8 +457,6 @@ async function listForms(tenantId = TENANT) {
       `SELECT * FROM forms WHERE tenant_id = $1 ORDER BY created_at DESC`,
       [tenantId],
     );
-    if (!result.rows.length) return { source: "mock", forms: mock.FORMS, success: true };
-
     const forms = result.rows.map((r) => ({
       id: r.id,
       name: r.name,
@@ -477,18 +475,63 @@ async function listForms(tenantId = TENANT) {
   }
 }
 
+const SOURCE_LABELS = {
+  google_ads: "Google Ads",
+  instagram: "Instagram",
+  website: "Website",
+  linkedin: "LinkedIn",
+  whatsapp: "WhatsApp",
+};
+
+function normalizeFormRow(data, id) {
+  const sourceKey = data.sourceKey || data.source_key || "website";
+  return {
+    id,
+    name: data.name,
+    source: data.source || SOURCE_LABELS[sourceKey] || "Website",
+    sourceKey,
+    status: data.status || "ACTIVE",
+    service: data.service || "",
+    fields: Array.isArray(data.fields) ? data.fields : [],
+    leads: Number(data.leads) || 0,
+    revenue: Number(data.revenue) || 0,
+    conversion: Number(data.conversion) || 0,
+  };
+}
+
 async function createForm(tenantId, data) {
   const id = data.id || `form-${Date.now()}`;
+  const form = normalizeFormRow(data, id);
   await pool.query(
     `INSERT INTO forms (id, tenant_id, name, source, source_key, status, service, fields, leads, revenue, conversion)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [
-      id, tenantId, data.name, data.source, data.sourceKey || data.source_key,
-      data.status || "ACTIVE", data.service || "", JSON.stringify(data.fields || []),
-      data.leads || 0, data.revenue || 0, data.conversion || 0,
+      id, tenantId, form.name, form.source, form.sourceKey,
+      form.status, form.service, JSON.stringify(form.fields),
+      form.leads, form.revenue, form.conversion,
     ],
   );
-  return { success: true, form: { ...data, id } };
+  return { success: true, form };
+}
+
+async function updateForm(tenantId, id, data) {
+  const form = normalizeFormRow({ ...data, id }, id);
+  const result = await pool.query(
+    `UPDATE forms SET
+      name = $3, source = $4, source_key = $5, status = $6, service = $7,
+      fields = $8, updated_at = NOW()
+     WHERE tenant_id = $1 AND id = $2`,
+    [
+      tenantId, id, form.name, form.source, form.sourceKey,
+      form.status, form.service, JSON.stringify(form.fields),
+    ],
+  );
+  if ((result.rowCount ?? 0) === 0) {
+    const err = new Error("Form not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  return { success: true, form };
 }
 
 async function saveAiInsight(tenantId, insight) {
@@ -579,6 +622,7 @@ module.exports = {
   createService,
   listForms,
   createForm,
+  updateForm,
   saveAiInsight,
   generateAiInsights,
   getIncentivesData,
