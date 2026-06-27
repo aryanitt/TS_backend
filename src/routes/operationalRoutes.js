@@ -12,6 +12,7 @@ const {
   noteSchema,
   callSchema,
   followupSchema,
+  taskSchema,
   meetingSchema,
   momSchema,
 } = require("../validators/operationalSchemas");
@@ -252,7 +253,7 @@ router.get("/employee/:employeeId/tasks", asyncRoute(async (req, res) => {
   return ok(res, tasks);
 }));
 
-router.post("/employee/tasks", asyncRoute(async (req, res) => {
+router.post("/employee/tasks", validate(taskSchema), asyncRoute(async (req, res) => {
   const task = await repo.insertTask({ tenantId: tenant(req), ...req.body });
   return ok(res, task);
 }));

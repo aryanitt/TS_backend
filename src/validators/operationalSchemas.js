@@ -85,6 +85,16 @@ const followupSchema = z.object({
   priority: z.enum(["low", "medium", "high", "critical"]).optional(),
 });
 
+const taskSchema = z.object({
+  assigneeId: objectId,
+  title: z.string().min(1),
+  description: z.string().optional(),
+  priority: z.enum(["low", "medium", "high", "critical"]).optional(),
+  dueAt: z.coerce.date().optional(),
+  status: z.string().optional(),
+  leadId: objectId.optional(),
+});
+
 const meetingSchema = z.object({
   leadId: objectId,
   employeeId: objectId,
@@ -126,6 +136,7 @@ module.exports = {
   noteSchema,
   callSchema,
   followupSchema,
+  taskSchema,
   meetingSchema,
   momSchema,
 };
