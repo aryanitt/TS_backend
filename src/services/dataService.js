@@ -238,7 +238,7 @@ async function queryLeadsStats(tenantId, rangeKey) {
   return result.rows[0] || {};
 }
 
-async function queryLeaderboard(tenantId, rangeKey, limit = 5) {
+async function queryLeaderboard(tenantId, rangeKey, limit = 3) {
   const result = await pool.query(
     `SELECT e.name, e.id,
       COUNT(l.id) AS leads,
