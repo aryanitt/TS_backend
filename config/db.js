@@ -2,17 +2,22 @@ const mysql = require("mysql2/promise");
 const { promisify } = require("util");
 
 function resolveDbHost(host) {
-  const value = host || "127.0.0.1";
+  const value = (host || "127.0.0.1").trim();
   // Hostinger MySQL grants are often for 127.0.0.1, not IPv6 ::1.
   return value === "localhost" ? "127.0.0.1" : value;
 }
 
+function env(name) {
+  const value = process.env[name];
+  return typeof value === "string" ? value.trim() : value;
+}
+
 const pool = mysql.createPool({
-  host: resolveDbHost(process.env.DB_HOST),
-  port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
+  host: resolveDbHost(env("DB_HOST")),
+  port: Number(env("DB_PORT") || 3306),
+  user: env("DB_USER"),
+  password: env("DB_PASSWORD"),
+  database: env("DB_NAME"),
   waitForConnections: true,
   connectionLimit: Number(process.env.DB_POOL_MAX || 10),
   queueLimit: 0,
