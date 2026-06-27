@@ -1,8 +1,14 @@
 const mysql = require("mysql2/promise");
 const { promisify } = require("util");
 
+function resolveDbHost(host) {
+  const value = host || "127.0.0.1";
+  // Hostinger MySQL grants are often for 127.0.0.1, not IPv6 ::1.
+  return value === "localhost" ? "127.0.0.1" : value;
+}
+
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || "localhost",
+  host: resolveDbHost(process.env.DB_HOST),
   port: Number(process.env.DB_PORT || 3306),
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
