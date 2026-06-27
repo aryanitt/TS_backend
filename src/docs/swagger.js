@@ -5,7 +5,7 @@ const openApiSpec = {
   info: {
     title: "TS Publication CRM Operational API",
     version: "1.0.0",
-    description: "Lead queue, assignment, employee workflow, timeline, analytics, notifications, and webhook APIs. Backed by PostgreSQL.",
+    description: "Lead queue, assignment, employee workflow, timeline, analytics, notifications, and webhook APIs. Backed by MySQL.",
   },
   servers: [{ url: "/api/v1" }],
   tags: [

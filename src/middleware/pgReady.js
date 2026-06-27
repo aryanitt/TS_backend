@@ -20,7 +20,7 @@ function requirePg(req, res, next) {
   if (!pgReady) {
     return res.status(503).json({
       success: false,
-      message: "PostgreSQL is not connected. Set DB_* env vars and restart the backend.",
+      message: "MySQL is not connected. Set DB_* env vars in Hostinger and restart the backend.",
     });
   }
   return next();

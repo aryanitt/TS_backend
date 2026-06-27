@@ -468,34 +468,27 @@ const getTeamKPIs = async (req, res) => {
     let params     = [];
 
     if (range === "Today") {
-      dateFilter = `AND submitted_time::date = CURRENT_DATE`;
+      dateFilter = `AND DATE(submitted_time) = CURDATE()`;
     } else if (range === "This Week") {
-      dateFilter = `AND submitted_time >= DATE_TRUNC('week', CURRENT_DATE)
-                    AND submitted_time <  DATE_TRUNC('week', CURRENT_DATE) + INTERVAL '7 days'`;
+      dateFilter = `AND submitted_time >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+                    AND submitted_time < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY), INTERVAL 7 DAY)`;
     } else if (range === "Custom" && startDate && endDate) {
-      dateFilter = `AND submitted_time::date >= $1 AND submitted_time::date <= $2`;
+      dateFilter = `AND DATE(submitted_time) >= $1 AND DATE(submitted_time) <= $2`;
       params     = [startDate, endDate];
     } else {
-      // This Month (default)
-      dateFilter = `AND submitted_time >= DATE_TRUNC('month', CURRENT_DATE)
-                    AND submitted_time <  DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'`;
+      dateFilter = `AND submitted_time >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+                    AND submitted_time < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)`;
     }
 
-    // Total employees — always fixed
     const empResult = await pool.query(
       `SELECT COUNT(*) AS total_employees FROM employees`
     );
 
-    // Lead KPIs filtered by range
     const leadsResult = await pool.query(
       `SELECT
         COUNT(*) AS total_leads,
-        COUNT(*) FILTER (
-          WHERE LOWER(TRIM(status)) LIKE '%meeting%'
-        ) AS total_meetings,
-        COUNT(*) FILTER (
-          WHERE LOWER(TRIM(status)) = 'converted'
-        ) AS total_converted
+        SUM(CASE WHEN LOWER(TRIM(status)) LIKE '%meeting%' THEN 1 ELSE 0 END) AS total_meetings,
+        SUM(CASE WHEN LOWER(TRIM(status)) = 'converted' THEN 1 ELSE 0 END) AS total_converted
        FROM emp_leads
        WHERE 1=1 ${dateFilter}`,
       params
@@ -534,13 +527,13 @@ const getChartData = async (req, res) => {
     if (range === "Today") {
       query = `
         SELECT 
-          EXTRACT(HOUR FROM submitted_time) AS period,
+          HOUR(submitted_time) AS period,
           COUNT(*) AS total_leads,
-          COUNT(*) FILTER (WHERE LOWER(TRIM(status)) IN ('warm lead','hot lead','contacted')) AS qualified,
-          COUNT(*) FILTER (WHERE LOWER(TRIM(status)) LIKE '%meeting%') AS meetings,
-          COUNT(*) FILTER (WHERE LOWER(TRIM(status)) = 'converted') AS converted
+          SUM(CASE WHEN LOWER(TRIM(status)) IN ('warm lead','hot lead','contacted') THEN 1 ELSE 0 END) AS qualified,
+          SUM(CASE WHEN LOWER(TRIM(status)) LIKE '%meeting%' THEN 1 ELSE 0 END) AS meetings,
+          SUM(CASE WHEN LOWER(TRIM(status)) = 'converted' THEN 1 ELSE 0 END) AS converted
         FROM emp_leads
-        WHERE submitted_time::date = CURRENT_DATE
+        WHERE DATE(submitted_time) = CURDATE()
         GROUP BY period ORDER BY period
       `;
       labels = Array.from({ length: 13 }, (_, i) => {
@@ -554,14 +547,14 @@ const getChartData = async (req, res) => {
     } else if (range === "This Week") {
       query = `
         SELECT 
-          EXTRACT(DOW FROM submitted_time) AS period,
+          (DAYOFWEEK(submitted_time) - 1) AS period,
           COUNT(*) AS total_leads,
-          COUNT(*) FILTER (WHERE LOWER(TRIM(status)) IN ('warm lead','hot lead','contacted')) AS qualified,
-          COUNT(*) FILTER (WHERE LOWER(TRIM(status)) LIKE '%meeting%') AS meetings,
-          COUNT(*) FILTER (WHERE LOWER(TRIM(status)) = 'converted') AS converted
+          SUM(CASE WHEN LOWER(TRIM(status)) IN ('warm lead','hot lead','contacted') THEN 1 ELSE 0 END) AS qualified,
+          SUM(CASE WHEN LOWER(TRIM(status)) LIKE '%meeting%' THEN 1 ELSE 0 END) AS meetings,
+          SUM(CASE WHEN LOWER(TRIM(status)) = 'converted' THEN 1 ELSE 0 END) AS converted
         FROM emp_leads
-        WHERE submitted_time >= DATE_TRUNC('week', CURRENT_DATE)
-          AND submitted_time <  DATE_TRUNC('week', CURRENT_DATE) + INTERVAL '7 days'
+        WHERE submitted_time >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+          AND submitted_time < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY), INTERVAL 7 DAY)
         GROUP BY period ORDER BY period
       `;
       labels = [
@@ -577,14 +570,14 @@ const getChartData = async (req, res) => {
     } else if (range === "Custom" && startDate && endDate) {
       query = `
         SELECT 
-          submitted_time::date AS period,
+          DATE(submitted_time) AS period,
           COUNT(*) AS total_leads,
-          COUNT(*) FILTER (WHERE LOWER(TRIM(status)) IN ('warm lead','hot lead','contacted')) AS qualified,
-          COUNT(*) FILTER (WHERE LOWER(TRIM(status)) LIKE '%meeting%') AS meetings,
-          COUNT(*) FILTER (WHERE LOWER(TRIM(status)) = 'converted') AS converted
+          SUM(CASE WHEN LOWER(TRIM(status)) IN ('warm lead','hot lead','contacted') THEN 1 ELSE 0 END) AS qualified,
+          SUM(CASE WHEN LOWER(TRIM(status)) LIKE '%meeting%' THEN 1 ELSE 0 END) AS meetings,
+          SUM(CASE WHEN LOWER(TRIM(status)) = 'converted' THEN 1 ELSE 0 END) AS converted
         FROM emp_leads
-        WHERE submitted_time::date >= $1
-          AND submitted_time::date <= $2
+        WHERE DATE(submitted_time) >= $1
+          AND DATE(submitted_time) <= $2
         GROUP BY period ORDER BY period
       `;
 
@@ -631,14 +624,14 @@ const getChartData = async (req, res) => {
       // This Month — group by day
       query = `
         SELECT 
-          EXTRACT(DAY FROM submitted_time) AS period,
+          DAY(submitted_time) AS period,
           COUNT(*) AS total_leads,
-          COUNT(*) FILTER (WHERE LOWER(TRIM(status)) IN ('warm lead','hot lead','contacted')) AS qualified,
-          COUNT(*) FILTER (WHERE LOWER(TRIM(status)) LIKE '%meeting%') AS meetings,
-          COUNT(*) FILTER (WHERE LOWER(TRIM(status)) = 'converted') AS converted
+          SUM(CASE WHEN LOWER(TRIM(status)) IN ('warm lead','hot lead','contacted') THEN 1 ELSE 0 END) AS qualified,
+          SUM(CASE WHEN LOWER(TRIM(status)) LIKE '%meeting%' THEN 1 ELSE 0 END) AS meetings,
+          SUM(CASE WHEN LOWER(TRIM(status)) = 'converted' THEN 1 ELSE 0 END) AS converted
         FROM emp_leads
-        WHERE submitted_time >= DATE_TRUNC('month', CURRENT_DATE)
-          AND submitted_time <  DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'
+        WHERE submitted_time >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+          AND submitted_time < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
         GROUP BY period ORDER BY period
       `;
       const now = new Date();

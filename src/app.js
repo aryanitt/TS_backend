@@ -13,6 +13,7 @@ const activityRoutes = require("./routes/activityRoutes");
 const operationalRoutes = require("./routes/operationalRoutes");
 const { mountSwagger } = require("./docs/swagger");
 const { logger } = require("./config/logger");
+const { isPgReady } = require("./middleware/pgReady");
 const app = express();
 
 const corsOrigins = process.env.FRONTEND_URL
@@ -34,11 +35,23 @@ app.use("/api/activity", activityRoutes);
 app.use("/api/v1", operationalRoutes);
 mountSwagger(app);
 
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: "ts-publications-crm-api",
+    database: isPgReady() ? "connected" : "disconnected",
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.get("/", (req, res) => {
   res.json({
     message: "Backend is running successfully",
+    health: "/health",
     operationalApi: "/api/v1",
+    n8nWebhook: "/api/v1/webhooks/n8n",
     docs: "/api/docs",
+    database: isPgReady() ? "connected" : "disconnected",
   });
 });
 
