@@ -1017,7 +1017,7 @@ async function updateTask(tenantId, taskId, patch) {
 }
 
 async function listTasks(tenantId, filters = {}) {
-  const conditions = ["tenant_id = $1"];
+  const conditions = ["tenant_id = $1", "status <> 'cancelled'"];
   const params = [tenantId];
   let idx = 2;
   if (filters.assigneeId) {
@@ -1030,7 +1030,7 @@ async function listTasks(tenantId, filters = {}) {
     params.push(filters.status);
     idx += 1;
   }
-  let sql = `SELECT * FROM tasks WHERE ${conditions.join(" AND ")} ORDER BY due_at ASC NULLS LAST`;
+  let sql = `SELECT * FROM tasks WHERE ${conditions.join(" AND ")} ORDER BY (due_at IS NULL), due_at ASC`;
   if (filters.limit) {
     params.push(filters.limit);
     sql += ` LIMIT $${idx}`;
