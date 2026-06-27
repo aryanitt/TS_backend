@@ -251,7 +251,9 @@ async function getPipelineLeads(tenantId = TENANT) {
 
     if (!result.rows.length) return { source: "mock", leads: [] };
 
-    const leads = result.rows.map((row) => ({
+    const leads = result.rows.map((row) => {
+      const assigneeName = row.assignee_name || null;
+      return {
       id: String(row.id),
       stage: mapStageToPipeline(row.pipeline_stage || row.status),
       name: row.lead_name,
@@ -264,10 +266,22 @@ async function getPipelineLeads(tenantId = TENANT) {
       winProbability: row.win_probability || 50,
       phone: row.phone,
       email: row.email,
+      owner: assigneeName,
+      assignee: assigneeName,
+      assignee_name: assigneeName,
+      employeeName: assigneeName,
+      assigneeId: row.assigned_to || null,
+      assignedTo: assigneeName && row.assigned_to
+        ? { id: row.assigned_to, name: assigneeName, initials: row.assignee_initials }
+        : null,
+      nextFollowUp: row.next_follow_up_at
+        ? new Date(row.next_follow_up_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+        : "",
       activities: [],
       tasks: [],
       _dbId: row.id,
-    }));
+    };
+    });
 
     return { source: "database", leads, success: true };
   } catch (err) {
