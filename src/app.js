@@ -19,8 +19,19 @@ const { logger } = require("./config/logger");
 const { isPgReady } = require("./middleware/pgReady");
 const app = express();
 
+const DEFAULT_FRONTEND_ORIGINS = [
+  "https://ts-frontend-two.vercel.app",
+  "http://localhost:5173",
+  "http://localhost:8080",
+];
+
 const corsOrigins = process.env.FRONTEND_URL
-  ? process.env.FRONTEND_URL.split(",").map((s) => s.trim())
+  ? [
+      ...new Set([
+        ...DEFAULT_FRONTEND_ORIGINS,
+        ...process.env.FRONTEND_URL.split(",").map((s) => s.trim()).filter(Boolean),
+      ]),
+    ]
   : true;
 
 app.use(cors({ origin: corsOrigins, credentials: true }));
