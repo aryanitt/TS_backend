@@ -91,46 +91,26 @@ async function queryLeadsStats(tenantId, rangeKey) {
 }
 
 async function queryLeaderboard(tenantId, rangeKey, limit = 3) {
-  const { start } = rangeToDates(rangeKey);
-  const params = [tenantId];
-  let dateFilter = "";
-  if (start) {
-    params.push(start);
-    dateFilter += ` AND l.created_at >= $${params.length}`;
-  }
-  params.push(limit);
-
   const result = await pool.query(
     `SELECT e.name, e.id,
       COUNT(l.id) AS leads,
       SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN 1 ELSE 0 END) AS conv,
       COALESCE(SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN l.expected_revenue ELSE 0 END), 0) AS rev
      FROM employees e
-     LEFT JOIN leads l ON l.assigned_to = e.id AND l.is_deleted = 0 AND l.tenant_id = $1 ${dateFilter}
-     WHERE e.tenant_id = $1 AND (e.status = 'active' OR e.status IS NULL)
+     LEFT JOIN leads l ON l.assigned_to = e.id AND l.is_deleted = 0 AND l.tenant_id = $1
+     WHERE e.tenant_id = $1 AND (LOWER(COALESCE(e.status, 'active')) = 'active')
      GROUP BY e.id, e.name
-     HAVING leads > 0 OR conv > 0
-     ORDER BY conv DESC, leads DESC, e.name ASC
-     LIMIT $${params.length}`,
-    params,
+     ORDER BY conv DESC, leads DESC, e.name ASC`,
+    [tenantId],
   );
 
-  let rows = result.rows;
+  let rows = result.rows.slice(0, limit);
   if (!rows.length) {
-    const fallback = await pool.query(
-      `SELECT e.name, e.id,
-        COUNT(l.id) AS leads,
-        SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN 1 ELSE 0 END) AS conv,
-        COALESCE(SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN l.expected_revenue ELSE 0 END), 0) AS rev
-       FROM employees e
-       LEFT JOIN leads l ON l.assigned_to = e.id AND l.is_deleted = 0 AND l.tenant_id = $1
-       WHERE e.tenant_id = $1 AND (e.status = 'active' OR e.status IS NULL)
-       GROUP BY e.id, e.name
-       ORDER BY leads DESC, conv DESC, e.name ASC
-       LIMIT $2`,
+    const emps = await pool.query(
+      `SELECT name, id FROM employees WHERE tenant_id = $1 ORDER BY name ASC LIMIT $2`,
       [tenantId, limit],
     );
-    rows = fallback.rows;
+    rows = emps.rows.map((r) => ({ ...r, leads: 0, conv: 0, rev: 0 }));
   }
 
   return rows.map((r) => {

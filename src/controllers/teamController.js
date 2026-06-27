@@ -113,7 +113,13 @@ const getTeamPerformance = (req, res) => {
 const getEmployees = async (req, res) => {
   try {
     const result = await pool.query(
-      "SELECT * FROM employees ORDER BY id DESC"
+      `SELECT e.*,
+        (SELECT COUNT(*) FROM leads l WHERE l.assigned_to = e.id AND l.is_deleted = 0) AS leads,
+        (SELECT COUNT(*) FROM leads l
+          WHERE l.assigned_to = e.id AND l.is_deleted = 0
+            AND (l.pipeline_stage = 'Converted' OR l.status = 'Converted')) AS conv
+       FROM employees e
+       ORDER BY e.id DESC`,
     );
     res.json({
       success: true,
