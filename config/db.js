@@ -1,12 +1,37 @@
 const mysql = require("mysql2/promise");
 const { promisify } = require("util");
 
+function resolveDbHost(host) {
+  const value = (host || "127.0.0.1").trim();
+  // Hostinger MySQL grants are often for 127.0.0.1, not IPv6 ::1.
+  return value === "localhost" ? "127.0.0.1" : value;
+}
+
+function env(name) {
+  const value = process.env[name];
+  return typeof value === "string" ? value.trim() : value;
+}
+
+function logDbEnv(label = "mysql env") {
+  const host = resolveDbHost(env("DB_HOST"));
+
+  console.error(`[startup] ${label}`, JSON.stringify({
+    DB_HOST_raw: env("DB_HOST") || "(unset)",
+    DB_HOST_resolved: host,
+    DB_PORT: Number(env("DB_PORT") || 3306),
+    DB_USER: env("DB_USER") || "(unset)",
+    DB_NAME: env("DB_NAME") || "(unset)",
+    DB_SSL: env("DB_SSL") || "(unset)",
+    DB_PASSWORD: env("DB_PASSWORD") ? "(set)" : "(unset)",
+  }));
+}
+
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || "localhost",
-  port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
+  host: resolveDbHost(env("DB_HOST")),
+  port: Number(env("DB_PORT") || 3306),
+  user: env("DB_USER"),
+  password: env("DB_PASSWORD"),
+  database: env("DB_NAME"),
   waitForConnections: true,
   connectionLimit: Number(process.env.DB_POOL_MAX || 10),
   queueLimit: 0,
@@ -14,6 +39,8 @@ const pool = mysql.createPool({
   ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : undefined,
   dateStrings: false,
 });
+
+logDbEnv("mysql env used by pool");
 
 const coreQuery = promisify(pool.pool.query.bind(pool.pool));
 
@@ -170,3 +197,4 @@ pool.query = query;
 module.exports = pool;
 module.exports.query = query;
 module.exports.pool = pool;
+module.exports.logDbEnv = logDbEnv;
