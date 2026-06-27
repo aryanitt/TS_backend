@@ -90,7 +90,7 @@ async function queryLeadsStats(tenantId, rangeKey) {
   return result.rows[0] || {};
 }
 
-async function queryLeaderboard(tenantId, rangeKey, limit = 5) {
+async function queryLeaderboard(tenantId, rangeKey, limit = 3) {
   const { start } = rangeToDates(rangeKey);
   const params = [tenantId];
   let dateFilter = "";
@@ -107,22 +107,45 @@ async function queryLeaderboard(tenantId, rangeKey, limit = 5) {
       COALESCE(SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN l.expected_revenue ELSE 0 END), 0) AS rev
      FROM employees e
      LEFT JOIN leads l ON l.assigned_to = e.id AND l.is_deleted = 0 AND l.tenant_id = $1 ${dateFilter}
-     WHERE e.tenant_id = $1 AND e.status = 'active'
+     WHERE e.tenant_id = $1 AND (e.status = 'active' OR e.status IS NULL)
      GROUP BY e.id, e.name
-     ORDER BY conv DESC, leads DESC
+     HAVING leads > 0 OR conv > 0
+     ORDER BY conv DESC, leads DESC, e.name ASC
      LIMIT $${params.length}`,
     params,
   );
 
-  return result.rows.map((r) => ({
-    name: r.name,
-    leads: Number(r.leads) || 0,
-    resp: "2h",
-    qualR: r.leads ? `${Math.min(99, Math.round(((Number(r.leads) - Number(r.conv)) / Number(r.leads)) * 100))}%` : "0%",
-    convR: r.leads ? `${Math.round((Number(r.conv) / Number(r.leads)) * 100)}%` : "0%",
-    conv: Number(r.conv) || 0,
-    rev: formatINR(r.rev),
-  }));
+  let rows = result.rows;
+  if (!rows.length) {
+    const fallback = await pool.query(
+      `SELECT e.name, e.id,
+        COUNT(l.id) AS leads,
+        SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN 1 ELSE 0 END) AS conv,
+        COALESCE(SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN l.expected_revenue ELSE 0 END), 0) AS rev
+       FROM employees e
+       LEFT JOIN leads l ON l.assigned_to = e.id AND l.is_deleted = 0 AND l.tenant_id = $1
+       WHERE e.tenant_id = $1 AND (e.status = 'active' OR e.status IS NULL)
+       GROUP BY e.id, e.name
+       ORDER BY leads DESC, conv DESC, e.name ASC
+       LIMIT $2`,
+      [tenantId, limit],
+    );
+    rows = fallback.rows;
+  }
+
+  return rows.map((r) => {
+    const leads = Number(r.leads) || 0;
+    const conv = Number(r.conv) || 0;
+    return {
+      name: r.name,
+      leads,
+      resp: "2h",
+      qualR: leads ? `${Math.min(99, Math.round(((leads - conv) / leads) * 100))}%` : "0%",
+      convR: leads ? `${Math.round((conv / leads) * 100)}%` : "0%",
+      conv,
+      rev: formatINR(r.rev),
+    };
+  });
 }
 
 async function buildFilterDataFromDb(tenantId) {
@@ -196,10 +219,20 @@ async function getDashboardBundle(tenantId = TENANT) {
 
     if (hasLeads) {
       const dbFilter = await buildFilterDataFromDb(tenantId);
+      const mergeRange = (rangeKey) => ({
+        ...mock.FILTER_DATA[rangeKey],
+        ...dbFilter[rangeKey],
+        kpis: dbFilter[rangeKey]?.kpis?.length ? dbFilter[rangeKey].kpis : mock.FILTER_DATA[rangeKey].kpis,
+        leaderboard: dbFilter[rangeKey]?.leaderboard?.length
+          ? dbFilter[rangeKey].leaderboard
+          : mock.FILTER_DATA[rangeKey].leaderboard,
+        metrics: dbFilter[rangeKey]?.metrics || mock.FILTER_DATA[rangeKey].metrics,
+        insights: mock.FILTER_DATA[rangeKey].insights,
+      });
       filterData = {
-        today: { ...mock.FILTER_DATA.today, ...dbFilter.today, insights: mock.FILTER_DATA.today.insights },
-        week: { ...mock.FILTER_DATA.week, ...dbFilter.week, insights: mock.FILTER_DATA.week.insights },
-        month: { ...mock.FILTER_DATA.month, ...dbFilter.month, insights: mock.FILTER_DATA.month.insights },
+        today: mergeRange("today"),
+        week: mergeRange("week"),
+        month: mergeRange("month"),
       };
       source = "merged";
     }
