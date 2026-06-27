@@ -54,6 +54,154 @@ function tempToPriority(temp) {
   return "WARM";
 }
 
+function normalizeLeadText(value) {
+  return String(value || "").toLowerCase().trim();
+}
+
+function mapLeadToPipelineColumn(row) {
+  const pipeline = mapStageToPipeline(row.pipeline_stage || row.status);
+  const status = normalizeLeadText(row.status);
+
+  if (pipeline === "closed_won" || ["converted", "won", "closed"].includes(status)) {
+    return "Conversion";
+  }
+  if (pipeline === "negotiation" || status.includes("negotiat")) {
+    return "Negotiation";
+  }
+  if (pipeline === "proposal" || status.includes("meeting") || status.includes("proposal")) {
+    return "Meeting";
+  }
+  if (
+    pipeline === "qualified" ||
+    status.includes("qualif") ||
+    status.includes("warm lead") ||
+    status.includes("hot lead")
+  ) {
+    return "Qualified";
+  }
+  return "Contacted";
+}
+
+function mapLeadToTemperature(row) {
+  const priority = tempToPriority(row.temperature || row.priority);
+  if (priority === "HOT") return "Hot";
+  if (priority === "COLD") return "Cold";
+  return "Warm";
+}
+
+function buildPipelineStatusGrid(rows) {
+  const stages = ["Contacted", "Qualified", "Meeting", "Negotiation", "Conversion"];
+  const temps = ["Hot", "Warm", "Cold"];
+  const grid = {};
+  temps.forEach((t) => {
+    grid[t] = {};
+    stages.forEach((s) => {
+      grid[t][s] = 0;
+    });
+  });
+
+  rows.forEach((row) => {
+    const col = mapLeadToPipelineColumn(row);
+    const temp = mapLeadToTemperature(row);
+    grid[temp][col] += 1;
+  });
+
+  const stageTotals = {};
+  stages.forEach((s) => {
+    stageTotals[s] = temps.reduce((acc, t) => acc + grid[t][s], 0);
+  });
+
+  const tempTotals = {};
+  temps.forEach((t) => {
+    tempTotals[t] = stages.reduce((acc, s) => acc + grid[t][s], 0);
+  });
+
+  const totalLeads = rows.length;
+  const conversions = stageTotals.Conversion || 0;
+  const overallConv = totalLeads > 0 ? Math.round((conversions / totalLeads) * 100) : 0;
+
+  return {
+    grid,
+    stages,
+    stageTotals,
+    tempTotals,
+    totalLeads,
+    conversions,
+    overallConv,
+  };
+}
+
+async function queryPipelineLeadRows(tenantId, rangeKey = "week", service = "All Services") {
+  const { start, end } = rangeToDates(rangeKey);
+  const params = [tenantId];
+  let where = "l.tenant_id = $1 AND l.is_deleted = 0";
+
+  if (start) {
+    params.push(start);
+    where += ` AND l.created_at >= $${params.length}`;
+  }
+  if (end && rangeKey === "today") {
+    params.push(end);
+    where += ` AND l.created_at <= $${params.length}`;
+  }
+
+  if (service && service !== "All Services") {
+    params.push(`%${service}%`);
+    const idx = params.length;
+    where += ` AND (l.form_name LIKE $${idx} OR l.keyword LIKE $${idx} OR l.source LIKE $${idx})`;
+  }
+
+  const result = await pool.query(
+    `SELECT l.pipeline_stage, l.status, l.temperature, l.priority, l.form_name
+     FROM leads l
+     WHERE ${where}`,
+    params,
+  );
+
+  if (result.rows.length) return result.rows;
+
+  const legacyParams = [];
+  let legacyWhere = "1=1";
+  if (start) {
+    legacyParams.push(start);
+    legacyWhere += ` AND submitted_time >= $${legacyParams.length}`;
+  }
+  if (end && rangeKey === "today") {
+    legacyParams.push(end);
+    legacyWhere += ` AND submitted_time <= $${legacyParams.length}`;
+  }
+
+  const legacy = await pool.query(
+    `SELECT pipeline_stage, status, temperature, NULL AS priority, form_name
+     FROM emp_leads
+     WHERE ${legacyWhere}`,
+    legacyParams,
+  );
+  return legacy.rows;
+}
+
+async function getPipelineStatusGrid(tenantId = TENANT, options = {}) {
+  const { rangeKey = "week", service = "All Services" } = options;
+  const emptyGrid = buildPipelineStatusGrid([]);
+
+  if (!(await dbReady())) {
+    return { success: true, source: "mock", ...emptyGrid };
+  }
+
+  try {
+    const rows = await queryPipelineLeadRows(tenantId, rangeKey, service);
+    const built = buildPipelineStatusGrid(rows);
+    return {
+      success: true,
+      source: rows.length ? "database" : "empty",
+      ...built,
+    };
+  } catch (err) {
+    console.error("getPipelineStatusGrid error:", err.message);
+    return { success: true, source: "mock", ...emptyGrid };
+  }
+}
+
 async function dbReady() {
   try {
     await pool.query("SELECT 1");
@@ -641,6 +789,7 @@ module.exports = {
   dbReady,
   getDashboardBundle,
   getPipelineLeads,
+  getPipelineStatusGrid,
   updatePipelineLeadStage,
   getReportsBundle,
   getSettings,

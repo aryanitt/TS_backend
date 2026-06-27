@@ -46,6 +46,17 @@ const getPipeline = async (req, res) => {
   });
 };
 
+const getPipelineStatus = async (req, res) => {
+  try {
+    const rangeKey = req.query.range || "week";
+    const service = req.query.service || "All Services";
+    const data = await dataService.getPipelineStatusGrid(undefined, { rangeKey, service });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 const getPipelineLeads = async (req, res) => {
   const result = await dataService.getPipelineLeads();
   res.json(result);
@@ -112,6 +123,7 @@ module.exports = {
   getDashboard,
   getRevenue,
   getPipeline,
+  getPipelineStatus,
   getPipelineLeads,
   patchPipelineLead,
   getRecentLeads,

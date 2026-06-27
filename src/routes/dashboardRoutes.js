@@ -6,6 +6,7 @@ const {
   getDashboard,
   getRevenue,
   getPipeline,
+  getPipelineStatus,
   getPipelineLeads,
   patchPipelineLead,
   getRecentLeads,
@@ -23,6 +24,7 @@ router.get("/revenue", getRevenue);
 
 // PIPELINE + SERVICE BREAKDOWN
 router.get("/pipeline", getPipeline);
+router.get("/pipeline-status", getPipelineStatus);
 
 // KANBAN LEADS
 router.get("/pipeline/leads", getPipelineLeads);

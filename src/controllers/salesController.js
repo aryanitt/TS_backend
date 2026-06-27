@@ -1,4 +1,5 @@
 const pool = require("../../config/db");
+const dataService = require("../services/dataService");
 const getSalesDashboard = (req, res) => {
   res.json({
     kpis: {
@@ -573,66 +574,10 @@ const getEmpLeadStatusHistory = async (req, res) => {
 };
 const getEmpLeadsPipelineStats = async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT
-        LOWER(TRIM(status)) AS status,
-        COUNT(*)::int       AS count
-      FROM emp_leads
-      GROUP BY LOWER(TRIM(status))
-    `);
-
-    // Status → which pipeline stage column it belongs to
-    const stageMap = {
-      "new lead":          "Contacted",
-      "call back later":   "Contacted",
-      "cold lead":         "Contacted",
-      "not interested":    "Contacted",
-      "contacted":         "Contacted",
-      "warm lead":         "Qualified",
-      "qualified":         "Qualified",
-      "interested":        "Qualified",
-      "meeting scheduled": "Meeting",
-      "meeting booked":    "Meeting",
-      "meeting done":      "Negotiation",
-      "hot lead":          "Negotiation",
-      "negotiation":       "Negotiation",
-      "follow up":         "Negotiation",
-      "converted":         "Conversion",
-      "closed":            "Conversion",
-      "won":               "Conversion",
-    };
-
-    // Status → which temperature row it belongs to
-    const tempMap = (status) => {
-      if (status.includes("hot lead") || status.includes("negotiat") || status.includes("convert") || status.includes("closed") || status.includes("won")) return "Hot";
-      if (status.includes("warm lead") || status.includes("qualif") || status.includes("meeting") || status.includes("interested") || status.includes("follow")) return "Warm";
-      // new lead, call back later, cold lead, not interested → Cold
-      return "Cold";
-    };
-
-    const stages = ["Contacted", "Qualified", "Meeting", "Negotiation", "Conversion"];
-    const temps  = ["Hot", "Warm", "Cold"];
-
-    const grid = {};
-    temps.forEach(t => { grid[t] = {}; stages.forEach(s => (grid[t][s] = 0)); });
-
-    result.rows.forEach(row => {
-      const stage = stageMap[row.status] || "Contacted";
-      const temp  = tempMap(row.status);
-      grid[temp][stage] += row.count;
-    });
-
-    const stageTotals = {};
-    stages.forEach(s => {
-      stageTotals[s] = temps.reduce((acc, t) => acc + grid[t][s], 0);
-    });
-
-    const tempTotals = {};
-    temps.forEach(t => {
-      tempTotals[t] = stages.reduce((acc, s) => acc + grid[t][s], 0);
-    });
-
-    res.json({ success: true, grid, stages, stageTotals, tempTotals });
+    const rangeKey = req.query.range || "month";
+    const service = req.query.service || "All Services";
+    const data = await dataService.getPipelineStatusGrid(undefined, { rangeKey, service });
+    res.json(data);
   } catch (error) {
     console.error("pipeline-stats error:", error);
     res.status(500).json({ success: false, message: error.message });
