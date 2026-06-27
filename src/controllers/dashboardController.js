@@ -72,6 +72,43 @@ const patchPipelineLead = async (req, res) => {
   }
 };
 
+const getLeadTasks = async (req, res) => {
+  try {
+    const tasks = await dataService.listLeadTasks(req.params.id);
+    res.json({ success: true, tasks });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const createLeadTask = async (req, res) => {
+  try {
+    const { title, assigneeId } = req.body;
+    if (!title?.trim()) {
+      return res.status(400).json({ success: false, message: "Task title is required" });
+    }
+    const task = await dataService.createLeadTask(req.params.id, {
+      title: title.trim(),
+      assigneeId: assigneeId || req.body.assignee_id,
+    });
+    res.json({ success: true, task });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const patchLeadTask = async (req, res) => {
+  try {
+    const task = await dataService.updateLeadTask(req.params.taskId, req.body);
+    if (!task) {
+      return res.status(404).json({ success: false, message: "Task not found" });
+    }
+    res.json({ success: true, task });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 const getRecentLeads = async (req, res) => {
   const { leads } = await dataService.getPipelineLeads();
   if (leads.length) {
@@ -126,6 +163,9 @@ module.exports = {
   getPipelineStatus,
   getPipelineLeads,
   patchPipelineLead,
+  getLeadTasks,
+  createLeadTask,
+  patchLeadTask,
   getRecentLeads,
   getLeadById,
 };

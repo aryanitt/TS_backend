@@ -397,6 +397,98 @@ async function getDashboardBundle(tenantId = TENANT) {
   }
 }
 
+function mapPipelineTaskRow(row) {
+  return {
+    id: row.id,
+    text: row.title,
+    done: row.status === "done" || row.status === "completed",
+  };
+}
+
+async function loadTasksByLeadIds(tenantId, leadIds) {
+  const ids = leadIds.map(Number).filter(Boolean);
+  if (!ids.length) return {};
+
+  const placeholders = ids.map((_, i) => `$${i + 2}`).join(", ");
+  const result = await pool.query(
+    `SELECT id, lead_id, title, status FROM tasks
+     WHERE tenant_id = $1 AND lead_id IN (${placeholders}) AND status <> 'cancelled'
+     ORDER BY created_at ASC`,
+    [tenantId, ...ids],
+  );
+
+  const grouped = {};
+  for (const row of result.rows) {
+    const key = String(row.lead_id);
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push(mapPipelineTaskRow(row));
+  }
+  return grouped;
+}
+
+async function listLeadTasks(leadId, tenantId = TENANT) {
+  if (!(await dbReady())) return [];
+  const result = await pool.query(
+    `SELECT id, lead_id, title, status FROM tasks
+     WHERE tenant_id = $1 AND lead_id = $2 AND status <> 'cancelled'
+     ORDER BY created_at ASC`,
+    [tenantId, leadId],
+  );
+  return result.rows.map(mapPipelineTaskRow);
+}
+
+async function createLeadTask(leadId, { title, assigneeId, tenantId = TENANT }) {
+  if (!(await dbReady())) {
+    throw new Error("Database not connected");
+  }
+  if (!assigneeId) {
+    throw new Error("Lead must be assigned to an employee before adding tasks");
+  }
+
+  const result = await pool.query(
+    `INSERT INTO tasks (tenant_id, assignee_id, lead_id, title, priority, status, due_at)
+     VALUES ($1, $2, $3, $4, 'medium', 'pending', NOW()) RETURNING id, lead_id, title, status`,
+    [tenantId, assigneeId, leadId, title],
+  );
+
+  const row = result.rows[0];
+  if (row) return mapPipelineTaskRow(row);
+  return { id: result.insertId, text: title, done: false };
+}
+
+async function updateLeadTask(taskId, patch, tenantId = TENANT) {
+  if (!(await dbReady())) {
+    throw new Error("Database not connected");
+  }
+
+  const fields = [];
+  const params = [taskId, tenantId];
+  let idx = 3;
+
+  if (patch.status !== undefined) {
+    fields.push(`status = $${idx}`);
+    params.push(patch.status);
+    idx += 1;
+  }
+  if (patch.status === "done") {
+    fields.push("completed_at = NOW()");
+  }
+  if (patch.status === "pending") {
+    fields.push("completed_at = NULL");
+  }
+
+  if (!fields.length) return null;
+
+  fields.push("updated_at = NOW()");
+  const result = await pool.query(
+    `UPDATE tasks SET ${fields.join(", ")} WHERE id = $1 AND tenant_id = $2 RETURNING id, lead_id, title, status`,
+    params,
+  );
+
+  const row = result.rows[0];
+  return row ? mapPipelineTaskRow(row) : null;
+}
+
 async function getPipelineLeads(tenantId = TENANT) {
   if (!(await dbReady())) return { source: "mock", leads: [] };
 
@@ -411,6 +503,11 @@ async function getPipelineLeads(tenantId = TENANT) {
     );
 
     if (!result.rows.length) return { source: "mock", leads: [] };
+
+    const tasksByLead = await loadTasksByLeadIds(
+      tenantId,
+      result.rows.map((row) => row.id),
+    );
 
     const leads = result.rows.map((row) => {
       const assigneeName = row.assignee_name || null;
@@ -439,7 +536,7 @@ async function getPipelineLeads(tenantId = TENANT) {
         ? new Date(row.next_follow_up_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
         : "",
       activities: [],
-      tasks: [],
+      tasks: tasksByLead[String(row.id)] || [],
       _dbId: row.id,
     };
     });
@@ -789,6 +886,9 @@ module.exports = {
   dbReady,
   getDashboardBundle,
   getPipelineLeads,
+  listLeadTasks,
+  createLeadTask,
+  updateLeadTask,
   getPipelineStatusGrid,
   updatePipelineLeadStage,
   getReportsBundle,

@@ -1030,6 +1030,11 @@ async function listTasks(tenantId, filters = {}) {
     params.push(filters.status);
     idx += 1;
   }
+  if (filters.leadId) {
+    conditions.push(`lead_id = $${idx}`);
+    params.push(filters.leadId);
+    idx += 1;
+  }
   let sql = `SELECT * FROM tasks WHERE ${conditions.join(" AND ")} ORDER BY (due_at IS NULL), due_at ASC`;
   if (filters.limit) {
     params.push(filters.limit);
