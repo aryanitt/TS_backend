@@ -1,4 +1,5 @@
 const mysql = require("mysql2/promise");
+const { promisify } = require("util");
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
@@ -13,6 +14,8 @@ const pool = mysql.createPool({
   ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : undefined,
   dateStrings: false,
 });
+
+const coreQuery = promisify(pool.pool.query.bind(pool.pool));
 
 function transformSql(sql) {
   let s = sql;
@@ -98,7 +101,7 @@ async function queryReturningFallback(baseSql, mysqlParams, header) {
     const table = baseSql.match(/INTO\s+`?(\w+)`?/i)?.[1];
     const insertId = header?.insertId;
     if (table && insertId) {
-      const [rows] = await pool.execute(`SELECT * FROM \`${table}\` WHERE id = ?`, [insertId]);
+      const rows = await coreQuery(`SELECT * FROM \`${table}\` WHERE id = ?`, [insertId]);
       return { rows: mapRows(rows), rowCount: rows.length };
     }
   }
@@ -108,7 +111,7 @@ async function queryReturningFallback(baseSql, mysqlParams, header) {
     const idMatch = baseSql.match(/\bid\s*=\s*\?/i);
     if (table && idMatch) {
       const idVal = mysqlParams[mysqlParams.length - 1];
-      const [rows] = await pool.execute(`SELECT * FROM \`${table}\` WHERE id = ? LIMIT 1`, [idVal]);
+      const rows = await coreQuery(`SELECT * FROM \`${table}\` WHERE id = ? LIMIT 1`, [idVal]);
       if (rows.length) return { rows: mapRows(rows), rowCount: header?.affectedRows ?? rows.length };
     }
   }
@@ -129,7 +132,7 @@ async function query(text, params = []) {
   if (hasReturning) {
     const baseSql = mysqlSql.replace(/\sRETURNING\s+.+$/i, "");
     try {
-      const [result] = await pool.execute(mysqlSql, mysqlParams);
+      const result = await coreQuery(mysqlSql, mysqlParams);
       if (Array.isArray(result) && result.length > 0) {
         return { rows: mapRows(result), rowCount: result.length };
       }
@@ -139,12 +142,12 @@ async function query(text, params = []) {
       return { rows: mapRows(Array.isArray(result) ? result : []), rowCount: result?.affectedRows ?? 0 };
     } catch (err) {
       if (!/RETURNING/i.test(String(err.message))) throw err;
-      const [header] = await pool.execute(baseSql, mysqlParams);
+      const header = await coreQuery(baseSql, mysqlParams);
       return queryReturningFallback(baseSql, mysqlParams, header);
     }
   }
 
-  const [result] = await pool.execute(mysqlSql, mysqlParams);
+  const result = await coreQuery(mysqlSql, mysqlParams);
 
   if (Array.isArray(result)) {
     return { rows: mapRows(result), rowCount: result.length };

@@ -1,5 +1,19 @@
 require("dotenv").config();
 
+const isPassenger = typeof PhusionPassenger !== "undefined";
+
+console.log("[startup] booting", {
+  node: process.version,
+  passenger: isPassenger,
+  port: process.env.PORT || "(default 5000)",
+  dbHost: process.env.DB_HOST || "(unset)",
+  dbName: process.env.DB_NAME || "(unset)",
+});
+
+if (isPassenger) {
+  PhusionPassenger.configure({ autoInstall: false });
+}
+
 const http = require("http");
 const app = require("./src/app");
 const { initDatabase } = require("./database/init");
@@ -9,22 +23,9 @@ const { logger } = require("./src/config/logger");
 const { startSchedulers } = require("./src/jobs/schedulers");
 
 const PORT = Number(process.env.PORT || 5000);
-const HOST = process.env.HOST || "0.0.0.0";
-const server = http.createServer(app);
 const corsOrigins = process.env.FRONTEND_URL
   ? process.env.FRONTEND_URL.split(",").map((s) => s.trim())
   : true;
-
-function startServer() {
-  return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(PORT, HOST, () => {
-      server.removeListener("error", reject);
-      logger.info(`Server running on http://${HOST}:${PORT}`);
-      resolve();
-    });
-  });
-}
 
 async function initDatabaseLayer() {
   await initDatabase().catch((error) => {
@@ -41,19 +42,26 @@ async function initDatabaseLayer() {
   startSchedulers();
 }
 
-async function bootstrap() {
-  initSocket(server, corsOrigins);
-
-  // Start listening immediately so Hostinger/reverse-proxy health checks pass.
-  await startServer();
-
-  // DB init runs after the server is live (avoids 503 while PG connects).
+function onListening() {
+  logger.info(isPassenger ? "Server listening on Passenger" : `Server running on port ${PORT}`);
   initDatabaseLayer().catch((error) => {
     logger.error(`Database layer init failed: ${error.message || String(error)}`);
   });
 }
 
-bootstrap().catch((error) => {
-  logger.error(`Fatal startup error: ${error.message || String(error)}`);
+const server = http.createServer(app);
+initSocket(server, corsOrigins);
+
+server.on("error", (error) => {
+  logger.error(`Server listen error: ${error.message || String(error)}`);
   process.exit(1);
 });
+
+if (isPassenger) {
+  server.listen("passenger", onListening);
+} else {
+  const host = process.env.HOST || "0.0.0.0";
+  server.listen(PORT, host, onListening);
+}
+
+module.exports = app;
