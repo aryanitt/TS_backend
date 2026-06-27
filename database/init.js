@@ -402,12 +402,20 @@ async function initDatabase() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
 
-    await pool.query(`CREATE INDEX idx_leads_tenant_assignment ON leads(tenant_id, assignment_status, created_at)`);
-    await pool.query(`CREATE INDEX idx_leads_tenant_assigned ON leads(tenant_id, assigned_to, pipeline_stage)`);
-    await pool.query(`CREATE INDEX idx_lead_queue_status ON lead_assignment_queue(tenant_id, status, priority, queued_at)`);
-    await pool.query(`CREATE INDEX idx_timeline_lead ON lead_timeline_events(tenant_id, lead_id, created_at)`);
-    await pool.query(`CREATE INDEX idx_emp_leads_submitted ON emp_leads(submitted_time)`);
-    await pool.query(`CREATE INDEX idx_emp_leads_employee ON emp_leads(employee_name)`);
+    const indexes = [
+      "CREATE INDEX idx_leads_tenant_assignment ON leads(tenant_id, assignment_status, created_at)",
+      "CREATE INDEX idx_leads_tenant_assigned ON leads(tenant_id, assigned_to, pipeline_stage)",
+      "CREATE INDEX idx_lead_queue_status ON lead_assignment_queue(tenant_id, status, priority, queued_at)",
+      "CREATE INDEX idx_timeline_lead ON lead_timeline_events(tenant_id, lead_id, created_at)",
+      "CREATE INDEX idx_emp_leads_submitted ON emp_leads(submitted_time)",
+      "CREATE INDEX idx_emp_leads_employee ON emp_leads(employee_name)",
+    ];
+
+    for (const sql of indexes) {
+      await pool.query(sql).catch((error) => {
+        if (error.code !== "ER_DUP_KEYNAME") throw error;
+      });
+    }
 
     console.log("Database tables ready (MySQL schema)");
     await seedOperationalData(pool);

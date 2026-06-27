@@ -1,5 +1,7 @@
 require("dotenv").config();
 
+const express = require("express");
+
 const isPassenger = typeof PhusionPassenger !== "undefined";
 
 console.log("[startup] booting", {
@@ -14,54 +16,67 @@ if (isPassenger) {
   PhusionPassenger.configure({ autoInstall: false });
 }
 
-const http = require("http");
-const app = require("./src/app");
-const { initDatabase } = require("./database/init");
-const { checkPgConnection } = require("./src/middleware/pgReady");
-const { initSocket } = require("./src/realtime/socket");
-const { logger } = require("./src/config/logger");
-const { startSchedulers } = require("./src/jobs/schedulers");
-
+const boot = express();
 const PORT = Number(process.env.PORT || 5000);
-const corsOrigins = process.env.FRONTEND_URL
-  ? process.env.FRONTEND_URL.split(",").map((s) => s.trim())
-  : true;
 
-async function initDatabaseLayer() {
-  await initDatabase().catch((error) => {
-    logger.warn(`MySQL initialization skipped: ${error.message || String(error)}`);
+boot.get("/health", (req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: "ts-publications-crm-api",
+    status: global.__appReady ? "ready" : "booting",
+    database: global.__dbReady ? "connected" : "pending",
+    timestamp: new Date().toISOString(),
   });
+});
 
-  const connected = await checkPgConnection();
-  if (connected) {
-    logger.info("MySQL connected");
-  } else {
-    logger.warn("MySQL not available — /api/v1 will return 503 until DB is configured");
+function mountApp() {
+  try {
+    const main = require("./src/app");
+    boot.use(main);
+    global.__appReady = true;
+    console.log("[startup] app mounted");
+  } catch (error) {
+    console.error("[startup] app mount failed:", error);
   }
-
-  startSchedulers();
 }
 
-function onListening() {
-  logger.info(isPassenger ? "Server listening on Passenger" : `Server running on port ${PORT}`);
+function startBackgroundTasks() {
+  const { initDatabase } = require("./database/init");
+  const { checkPgConnection } = require("./src/middleware/pgReady");
+  const { startSchedulers } = require("./src/jobs/schedulers");
+  const { logger } = require("./src/config/logger");
+
+  async function initDatabaseLayer() {
+    await initDatabase().catch((error) => {
+      logger.warn(`MySQL initialization skipped: ${error.message || String(error)}`);
+    });
+
+    const connected = await checkPgConnection();
+    global.__dbReady = connected;
+    if (connected) {
+      logger.info("MySQL connected");
+    } else {
+      logger.warn("MySQL not available — /api/v1 will return 503 until DB is configured");
+    }
+
+    startSchedulers();
+  }
+
   initDatabaseLayer().catch((error) => {
     logger.error(`Database layer init failed: ${error.message || String(error)}`);
   });
 }
 
-const server = http.createServer(app);
-initSocket(server, corsOrigins);
-
-server.on("error", (error) => {
-  logger.error(`Server listen error: ${error.message || String(error)}`);
-  process.exit(1);
-});
-
-if (isPassenger) {
-  server.listen("passenger", onListening);
-} else {
-  const host = process.env.HOST || "0.0.0.0";
-  server.listen(PORT, host, onListening);
+function onListening() {
+  console.log("[startup] listening", isPassenger ? "on Passenger" : `on port ${PORT}`);
+  mountApp();
+  setImmediate(startBackgroundTasks);
 }
 
-module.exports = app;
+if (isPassenger) {
+  boot.listen("passenger", onListening);
+} else {
+  boot.listen(PORT, "0.0.0.0", onListening);
+}
+
+module.exports = boot;
