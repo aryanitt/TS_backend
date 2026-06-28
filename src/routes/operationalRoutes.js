@@ -14,6 +14,7 @@ const {
   followupSchema,
   taskSchema,
   meetingSchema,
+  meetingPatchSchema,
   momSchema,
 } = require("../validators/operationalSchemas");
 const { requirePg } = require("../middleware/pgReady");
@@ -223,12 +224,13 @@ router.get("/employees/:id/leads", asyncRoute(async (req, res) => {
 router.get("/employee/:employeeId/dashboard", asyncRoute(async (req, res) => {
   const tenantId = tenant(req);
   const employeeId = req.params.employeeId;
-  const [employee, leadsResult, tasks, followups, calls] = await Promise.all([
+  const [employee, leadsResult, tasks, followups, calls, meetings] = await Promise.all([
     repo.findEmployeeById(tenantId, employeeId),
     repo.listLeads(tenantId, { assignedTo: employeeId }, { page: 1, limit: 500 }),
     repo.listTasks(tenantId, { assigneeId: employeeId, limit: 20 }),
     repo.listFollowups(tenantId, employeeId),
     repo.listCalls(tenantId, employeeId),
+    repo.listMeetings(tenantId, employeeId),
   ]);
   return ok(res, {
     employee,
@@ -236,6 +238,7 @@ router.get("/employee/:employeeId/dashboard", asyncRoute(async (req, res) => {
     tasks: tasks.slice(0, 20),
     followups: followups.slice(0, 20),
     calls: calls.slice(0, 20),
+    meetings,
   });
 }));
 
@@ -254,7 +257,18 @@ router.get("/employee/:employeeId/tasks", asyncRoute(async (req, res) => {
 }));
 
 router.post("/employee/tasks", validate(taskSchema), asyncRoute(async (req, res) => {
-  const task = await repo.insertTask({ tenantId: tenant(req), ...req.body });
+  const tenantId = tenant(req);
+  const assignee = await repo.findEmployeeById(tenantId, req.body.assigneeId);
+  if (!assignee) {
+    return res.status(400).json({
+      success: false,
+      message: `Employee ${req.body.assigneeId} not found. Add employees in Team or run DB seed.`,
+    });
+  }
+  const task = await repo.insertTask({ tenantId, ...req.body });
+  if (!task?.id) {
+    return res.status(500).json({ success: false, message: "Task insert failed — no id returned" });
+  }
   return ok(res, task);
 }));
 
@@ -266,7 +280,18 @@ router.patch("/employee/tasks/:id", asyncRoute(async (req, res) => {
 }));
 
 router.post("/employee/calls", validate(callSchema), asyncRoute(async (req, res) => {
-  const call = await recordCall({ tenantId: tenant(req), data: req.body, actor: actor(req) });
+  const tenantId = tenant(req);
+  const [lead, employee] = await Promise.all([
+    repo.findLeadById(tenantId, req.body.leadId),
+    repo.findEmployeeById(tenantId, req.body.employeeId),
+  ]);
+  if (!lead) {
+    return res.status(400).json({ success: false, message: `Lead ${req.body.leadId} not found` });
+  }
+  if (!employee) {
+    return res.status(400).json({ success: false, message: `Employee ${req.body.employeeId} not found` });
+  }
+  const call = await recordCall({ tenantId, data: req.body, actor: actor(req) });
   return ok(res, call);
 }));
 
@@ -291,7 +316,27 @@ router.get("/employee/:employeeId/followups", asyncRoute(async (req, res) => {
 }));
 
 router.post("/employee/meetings", validate(meetingSchema), asyncRoute(async (req, res) => {
-  const meeting = await createMeeting({ tenantId: tenant(req), data: req.body, actor: actor(req) });
+  const tenantId = tenant(req);
+  const [lead, employee] = await Promise.all([
+    repo.findLeadById(tenantId, req.body.leadId),
+    repo.findEmployeeById(tenantId, req.body.employeeId),
+  ]);
+  if (!lead) {
+    return res.status(400).json({ success: false, message: `Lead ${req.body.leadId} not found` });
+  }
+  if (!employee) {
+    return res.status(400).json({ success: false, message: `Employee ${req.body.employeeId} not found` });
+  }
+  const meeting = await createMeeting({ tenantId, data: req.body, actor: actor(req) });
+  if (!meeting?.id) {
+    return res.status(500).json({ success: false, message: "Meeting insert failed — no id returned" });
+  }
+  return ok(res, meeting);
+}));
+
+router.patch("/employee/meetings/:id", validate(meetingPatchSchema), asyncRoute(async (req, res) => {
+  const meeting = await repo.updateMeeting(tenant(req), req.params.id, req.body);
+  if (!meeting) return res.status(404).json({ success: false, message: "Meeting not found" });
   return ok(res, meeting);
 }));
 

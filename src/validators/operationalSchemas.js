@@ -69,6 +69,7 @@ const callSchema = z.object({
   endedAt: z.coerce.date().optional(),
   notes: z.string().optional(),
   aiSummary: z.string().optional(),
+  sopId: z.coerce.number().optional().nullable(),
   checklistProgress: z.array(z.object({
     stepId: z.string(),
     done: z.boolean(),
@@ -98,11 +99,16 @@ const taskSchema = z.object({
 const meetingSchema = z.object({
   leadId: objectId,
   employeeId: objectId,
-  title: z.string().optional(),
+  title: z.string().min(1),
   scheduledAt: z.coerce.date(),
   durationMin: z.coerce.number().optional(),
   meetLink: z.string().optional(),
   location: z.string().optional(),
+  agenda: z.string().optional(),
+});
+
+const meetingPatchSchema = z.object({
+  status: z.enum(["scheduled", "completed", "cancelled"]),
 });
 
 const momSchema = z.object({
@@ -138,5 +144,6 @@ module.exports = {
   followupSchema,
   taskSchema,
   meetingSchema,
+  meetingPatchSchema,
   momSchema,
 };

@@ -25,16 +25,27 @@ const DEFAULT_FRONTEND_ORIGINS = [
   "http://localhost:8080",
 ];
 
-const corsOrigins = process.env.FRONTEND_URL
-  ? [
-      ...new Set([
-        ...DEFAULT_FRONTEND_ORIGINS,
-        ...process.env.FRONTEND_URL.split(",").map((s) => s.trim()).filter(Boolean),
-      ]),
-    ]
-  : true;
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  if (DEFAULT_FRONTEND_ORIGINS.includes(origin)) return true;
+  if (/^https:\/\/[\w-]+\.vercel\.app$/i.test(origin)) return true;
+  if (/^http:\/\/localhost:\d+$/i.test(origin)) return true;
+  const extra = process.env.FRONTEND_URL
+    ? process.env.FRONTEND_URL.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+  return extra.includes(origin);
+}
 
-app.use(cors({ origin: corsOrigins, credentials: true }));
+app.use(cors({
+  origin(origin, callback) {
+    if (isAllowedOrigin(origin)) {
+      callback(null, origin || true);
+    } else {
+      callback(null, false);
+    }
+  },
+  credentials: true,
+}));
 app.use(express.json());
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 

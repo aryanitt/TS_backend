@@ -1104,9 +1104,10 @@ async function listDueFollowups(tenantId, limit) {
 }
 
 async function insertMeeting(data) {
+  const mom = data.agenda ? JSON.stringify({ agenda: data.agenda }) : null;
   const result = await pool.query(
-    `INSERT INTO meetings (tenant_id, lead_id, employee_id, title, scheduled_at, duration_min, meet_link, location, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'scheduled') RETURNING *`,
+    `INSERT INTO meetings (tenant_id, lead_id, employee_id, title, scheduled_at, duration_min, meet_link, location, status, mom)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'scheduled',$9) RETURNING *`,
     [
       data.tenantId,
       data.leadId,
@@ -1116,6 +1117,7 @@ async function insertMeeting(data) {
       data.durationMin || null,
       data.meetLink || null,
       data.location || null,
+      mom,
     ],
   );
   return mapMeeting(result.rows[0]);
