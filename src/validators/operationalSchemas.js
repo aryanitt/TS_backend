@@ -85,14 +85,29 @@ const followupSchema = z.object({
   priority: z.enum(["low", "medium", "high", "critical"]).optional(),
 });
 
+const taskSchema = z.object({
+  assigneeId: objectId,
+  title: z.string().min(1),
+  description: z.string().optional(),
+  priority: z.enum(["low", "medium", "high", "critical"]).optional(),
+  dueAt: z.coerce.date().optional(),
+  status: z.string().optional(),
+  leadId: objectId.optional(),
+});
+
 const meetingSchema = z.object({
   leadId: objectId,
   employeeId: objectId,
-  title: z.string().optional(),
+  title: z.string().min(1),
   scheduledAt: z.coerce.date(),
   durationMin: z.coerce.number().optional(),
   meetLink: z.string().optional(),
   location: z.string().optional(),
+  agenda: z.string().optional(),
+});
+
+const meetingPatchSchema = z.object({
+  status: z.enum(["scheduled", "completed", "cancelled"]),
 });
 
 const momSchema = z.object({
@@ -126,6 +141,8 @@ module.exports = {
   noteSchema,
   callSchema,
   followupSchema,
+  taskSchema,
   meetingSchema,
+  meetingPatchSchema,
   momSchema,
 };

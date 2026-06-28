@@ -191,7 +191,14 @@ function mapCall(row) {
     startedAt: row.started_at,
     endedAt: row.ended_at,
     sopId: row.sop_id,
-    checklistProgress: row.checklist_progress || [],
+    checklistProgress: (() => {
+      const raw = row.checklist_progress;
+      if (!raw) return [];
+      if (typeof raw === "string") {
+        try { return JSON.parse(raw); } catch { return []; }
+      }
+      return raw;
+    })(),
     recordingUrl: row.recording_url,
     transcript: row.transcript,
     notes: row.notes,
@@ -949,8 +956,8 @@ async function listNotes(tenantId, leadId) {
 
 async function insertCall(data) {
   const result = await pool.query(
-    `INSERT INTO employee_calls (tenant_id, lead_id, employee_id, direction, outcome, duration_sec, started_at, ended_at, sop_id, notes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    `INSERT INTO employee_calls (tenant_id, lead_id, employee_id, direction, outcome, duration_sec, started_at, ended_at, sop_id, notes, ai_summary, checklist_progress, recording_url)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
     [
       data.tenantId,
       data.leadId,
@@ -962,6 +969,9 @@ async function insertCall(data) {
       data.endedAt || null,
       data.sopId || null,
       data.notes || null,
+      data.aiSummary || null,
+      data.checklistProgress ? JSON.stringify(data.checklistProgress) : null,
+      data.recordingUrl || null,
     ],
   );
   return mapCall(result.rows[0]);
@@ -1017,7 +1027,7 @@ async function updateTask(tenantId, taskId, patch) {
 }
 
 async function listTasks(tenantId, filters = {}) {
-  const conditions = ["tenant_id = $1"];
+  const conditions = ["tenant_id = $1", "status <> 'cancelled'"];
   const params = [tenantId];
   let idx = 2;
   if (filters.assigneeId) {
@@ -1030,7 +1040,12 @@ async function listTasks(tenantId, filters = {}) {
     params.push(filters.status);
     idx += 1;
   }
-  let sql = `SELECT * FROM tasks WHERE ${conditions.join(" AND ")} ORDER BY due_at ASC NULLS LAST`;
+  if (filters.leadId) {
+    conditions.push(`lead_id = $${idx}`);
+    params.push(filters.leadId);
+    idx += 1;
+  }
+  let sql = `SELECT * FROM tasks WHERE ${conditions.join(" AND ")} ORDER BY (due_at IS NULL), due_at ASC`;
   if (filters.limit) {
     params.push(filters.limit);
     sql += ` LIMIT $${idx}`;
@@ -1089,9 +1104,10 @@ async function listDueFollowups(tenantId, limit) {
 }
 
 async function insertMeeting(data) {
+  const mom = data.agenda ? JSON.stringify({ agenda: data.agenda }) : null;
   const result = await pool.query(
-    `INSERT INTO meetings (tenant_id, lead_id, employee_id, title, scheduled_at, duration_min, meet_link, location, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'scheduled') RETURNING *`,
+    `INSERT INTO meetings (tenant_id, lead_id, employee_id, title, scheduled_at, duration_min, meet_link, location, status, mom)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'scheduled',$9) RETURNING *`,
     [
       data.tenantId,
       data.leadId,
@@ -1101,6 +1117,7 @@ async function insertMeeting(data) {
       data.durationMin || null,
       data.meetLink || null,
       data.location || null,
+      mom,
     ],
   );
   return mapMeeting(result.rows[0]);

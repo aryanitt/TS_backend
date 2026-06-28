@@ -19,11 +19,33 @@ const { logger } = require("./config/logger");
 const { isPgReady } = require("./middleware/pgReady");
 const app = express();
 
-const corsOrigins = process.env.FRONTEND_URL
-  ? process.env.FRONTEND_URL.split(",").map((s) => s.trim())
-  : true;
+const DEFAULT_FRONTEND_ORIGINS = [
+  "https://ts-frontend-two.vercel.app",
+  "http://localhost:5173",
+  "http://localhost:8080",
+];
 
-app.use(cors({ origin: corsOrigins, credentials: true }));
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  if (DEFAULT_FRONTEND_ORIGINS.includes(origin)) return true;
+  if (/^https:\/\/[\w-]+\.vercel\.app$/i.test(origin)) return true;
+  if (/^http:\/\/localhost:\d+$/i.test(origin)) return true;
+  const extra = process.env.FRONTEND_URL
+    ? process.env.FRONTEND_URL.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+  return extra.includes(origin);
+}
+
+app.use(cors({
+  origin(origin, callback) {
+    if (isAllowedOrigin(origin)) {
+      callback(null, origin || true);
+    } else {
+      callback(null, false);
+    }
+  },
+  credentials: true,
+}));
 app.use(express.json());
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 

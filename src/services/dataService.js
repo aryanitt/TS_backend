@@ -54,6 +54,154 @@ function tempToPriority(temp) {
   return "WARM";
 }
 
+function normalizeLeadText(value) {
+  return String(value || "").toLowerCase().trim();
+}
+
+function mapLeadToPipelineColumn(row) {
+  const pipeline = mapStageToPipeline(row.pipeline_stage || row.status);
+  const status = normalizeLeadText(row.status);
+
+  if (pipeline === "closed_won" || ["converted", "won", "closed"].includes(status)) {
+    return "Conversion";
+  }
+  if (pipeline === "negotiation" || status.includes("negotiat")) {
+    return "Negotiation";
+  }
+  if (pipeline === "proposal" || status.includes("meeting") || status.includes("proposal")) {
+    return "Meeting";
+  }
+  if (
+    pipeline === "qualified" ||
+    status.includes("qualif") ||
+    status.includes("warm lead") ||
+    status.includes("hot lead")
+  ) {
+    return "Qualified";
+  }
+  return "Contacted";
+}
+
+function mapLeadToTemperature(row) {
+  const priority = tempToPriority(row.temperature || row.priority);
+  if (priority === "HOT") return "Hot";
+  if (priority === "COLD") return "Cold";
+  return "Warm";
+}
+
+function buildPipelineStatusGrid(rows) {
+  const stages = ["Contacted", "Qualified", "Meeting", "Negotiation", "Conversion"];
+  const temps = ["Hot", "Warm", "Cold"];
+  const grid = {};
+  temps.forEach((t) => {
+    grid[t] = {};
+    stages.forEach((s) => {
+      grid[t][s] = 0;
+    });
+  });
+
+  rows.forEach((row) => {
+    const col = mapLeadToPipelineColumn(row);
+    const temp = mapLeadToTemperature(row);
+    grid[temp][col] += 1;
+  });
+
+  const stageTotals = {};
+  stages.forEach((s) => {
+    stageTotals[s] = temps.reduce((acc, t) => acc + grid[t][s], 0);
+  });
+
+  const tempTotals = {};
+  temps.forEach((t) => {
+    tempTotals[t] = stages.reduce((acc, s) => acc + grid[t][s], 0);
+  });
+
+  const totalLeads = rows.length;
+  const conversions = stageTotals.Conversion || 0;
+  const overallConv = totalLeads > 0 ? Math.round((conversions / totalLeads) * 100) : 0;
+
+  return {
+    grid,
+    stages,
+    stageTotals,
+    tempTotals,
+    totalLeads,
+    conversions,
+    overallConv,
+  };
+}
+
+async function queryPipelineLeadRows(tenantId, rangeKey = "week", service = "All Services") {
+  const { start, end } = rangeToDates(rangeKey);
+  const params = [tenantId];
+  let where = "l.tenant_id = $1 AND l.is_deleted = 0";
+
+  if (start) {
+    params.push(start);
+    where += ` AND l.created_at >= $${params.length}`;
+  }
+  if (end && rangeKey === "today") {
+    params.push(end);
+    where += ` AND l.created_at <= $${params.length}`;
+  }
+
+  if (service && service !== "All Services") {
+    params.push(`%${service}%`);
+    const idx = params.length;
+    where += ` AND (l.form_name LIKE $${idx} OR l.keyword LIKE $${idx} OR l.source LIKE $${idx})`;
+  }
+
+  const result = await pool.query(
+    `SELECT l.pipeline_stage, l.status, l.temperature, l.priority, l.form_name
+     FROM leads l
+     WHERE ${where}`,
+    params,
+  );
+
+  if (result.rows.length) return result.rows;
+
+  const legacyParams = [];
+  let legacyWhere = "1=1";
+  if (start) {
+    legacyParams.push(start);
+    legacyWhere += ` AND submitted_time >= $${legacyParams.length}`;
+  }
+  if (end && rangeKey === "today") {
+    legacyParams.push(end);
+    legacyWhere += ` AND submitted_time <= $${legacyParams.length}`;
+  }
+
+  const legacy = await pool.query(
+    `SELECT pipeline_stage, status, temperature, NULL AS priority, form_name
+     FROM emp_leads
+     WHERE ${legacyWhere}`,
+    legacyParams,
+  );
+  return legacy.rows;
+}
+
+async function getPipelineStatusGrid(tenantId = TENANT, options = {}) {
+  const { rangeKey = "week", service = "All Services" } = options;
+  const emptyGrid = buildPipelineStatusGrid([]);
+
+  if (!(await dbReady())) {
+    return { success: true, source: "mock", ...emptyGrid };
+  }
+
+  try {
+    const rows = await queryPipelineLeadRows(tenantId, rangeKey, service);
+    const built = buildPipelineStatusGrid(rows);
+    return {
+      success: true,
+      source: rows.length ? "database" : "empty",
+      ...built,
+    };
+  } catch (err) {
+    console.error("getPipelineStatusGrid error:", err.message);
+    return { success: true, source: "mock", ...emptyGrid };
+  }
+}
+
 async function dbReady() {
   try {
     await pool.query("SELECT 1");
@@ -90,39 +238,42 @@ async function queryLeadsStats(tenantId, rangeKey) {
   return result.rows[0] || {};
 }
 
-async function queryLeaderboard(tenantId, rangeKey, limit = 5) {
-  const { start } = rangeToDates(rangeKey);
-  const params = [tenantId];
-  let dateFilter = "";
-  if (start) {
-    params.push(start);
-    dateFilter += ` AND l.created_at >= $${params.length}`;
-  }
-  params.push(limit);
-
+async function queryLeaderboard(tenantId, rangeKey, limit = 3) {
   const result = await pool.query(
     `SELECT e.name, e.id,
       COUNT(l.id) AS leads,
       SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN 1 ELSE 0 END) AS conv,
       COALESCE(SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN l.expected_revenue ELSE 0 END), 0) AS rev
      FROM employees e
-     LEFT JOIN leads l ON l.assigned_to = e.id AND l.is_deleted = 0 AND l.tenant_id = $1 ${dateFilter}
-     WHERE e.tenant_id = $1 AND e.status = 'active'
+     LEFT JOIN leads l ON l.assigned_to = e.id AND l.is_deleted = 0 AND l.tenant_id = $1
+     WHERE e.tenant_id = $1 AND (LOWER(COALESCE(e.status, 'active')) = 'active')
      GROUP BY e.id, e.name
-     ORDER BY conv DESC, leads DESC
-     LIMIT $${params.length}`,
-    params,
+     ORDER BY conv DESC, leads DESC, e.name ASC`,
+    [tenantId],
   );
 
-  return result.rows.map((r) => ({
-    name: r.name,
-    leads: Number(r.leads) || 0,
-    resp: "2h",
-    qualR: r.leads ? `${Math.min(99, Math.round(((Number(r.leads) - Number(r.conv)) / Number(r.leads)) * 100))}%` : "0%",
-    convR: r.leads ? `${Math.round((Number(r.conv) / Number(r.leads)) * 100)}%` : "0%",
-    conv: Number(r.conv) || 0,
-    rev: formatINR(r.rev),
-  }));
+  let rows = result.rows.slice(0, limit);
+  if (!rows.length) {
+    const emps = await pool.query(
+      `SELECT name, id FROM employees WHERE tenant_id = $1 ORDER BY name ASC LIMIT $2`,
+      [tenantId, limit],
+    );
+    rows = emps.rows.map((r) => ({ ...r, leads: 0, conv: 0, rev: 0 }));
+  }
+
+  return rows.map((r) => {
+    const leads = Number(r.leads) || 0;
+    const conv = Number(r.conv) || 0;
+    return {
+      name: r.name,
+      leads,
+      resp: "2h",
+      qualR: leads ? `${Math.min(99, Math.round(((leads - conv) / leads) * 100))}%` : "0%",
+      convR: leads ? `${Math.round((conv / leads) * 100)}%` : "0%",
+      conv,
+      rev: formatINR(r.rev),
+    };
+  });
 }
 
 async function buildFilterDataFromDb(tenantId) {
@@ -196,10 +347,20 @@ async function getDashboardBundle(tenantId = TENANT) {
 
     if (hasLeads) {
       const dbFilter = await buildFilterDataFromDb(tenantId);
+      const mergeRange = (rangeKey) => ({
+        ...mock.FILTER_DATA[rangeKey],
+        ...dbFilter[rangeKey],
+        kpis: dbFilter[rangeKey]?.kpis?.length ? dbFilter[rangeKey].kpis : mock.FILTER_DATA[rangeKey].kpis,
+        leaderboard: dbFilter[rangeKey]?.leaderboard?.length
+          ? dbFilter[rangeKey].leaderboard
+          : mock.FILTER_DATA[rangeKey].leaderboard,
+        metrics: dbFilter[rangeKey]?.metrics || mock.FILTER_DATA[rangeKey].metrics,
+        insights: mock.FILTER_DATA[rangeKey].insights,
+      });
       filterData = {
-        today: { ...mock.FILTER_DATA.today, ...dbFilter.today, insights: mock.FILTER_DATA.today.insights },
-        week: { ...mock.FILTER_DATA.week, ...dbFilter.week, insights: mock.FILTER_DATA.week.insights },
-        month: { ...mock.FILTER_DATA.month, ...dbFilter.month, insights: mock.FILTER_DATA.month.insights },
+        today: mergeRange("today"),
+        week: mergeRange("week"),
+        month: mergeRange("month"),
       };
       source = "merged";
     }
@@ -236,6 +397,98 @@ async function getDashboardBundle(tenantId = TENANT) {
   }
 }
 
+function mapPipelineTaskRow(row) {
+  return {
+    id: row.id,
+    text: row.title,
+    done: row.status === "done" || row.status === "completed",
+  };
+}
+
+async function loadTasksByLeadIds(tenantId, leadIds) {
+  const ids = leadIds.map(Number).filter(Boolean);
+  if (!ids.length) return {};
+
+  const placeholders = ids.map((_, i) => `$${i + 2}`).join(", ");
+  const result = await pool.query(
+    `SELECT id, lead_id, title, status FROM tasks
+     WHERE tenant_id = $1 AND lead_id IN (${placeholders}) AND status <> 'cancelled'
+     ORDER BY created_at ASC`,
+    [tenantId, ...ids],
+  );
+
+  const grouped = {};
+  for (const row of result.rows) {
+    const key = String(row.lead_id);
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push(mapPipelineTaskRow(row));
+  }
+  return grouped;
+}
+
+async function listLeadTasks(leadId, tenantId = TENANT) {
+  if (!(await dbReady())) return [];
+  const result = await pool.query(
+    `SELECT id, lead_id, title, status FROM tasks
+     WHERE tenant_id = $1 AND lead_id = $2 AND status <> 'cancelled'
+     ORDER BY created_at ASC`,
+    [tenantId, leadId],
+  );
+  return result.rows.map(mapPipelineTaskRow);
+}
+
+async function createLeadTask(leadId, { title, assigneeId, tenantId = TENANT }) {
+  if (!(await dbReady())) {
+    throw new Error("Database not connected");
+  }
+  if (!assigneeId) {
+    throw new Error("Lead must be assigned to an employee before adding tasks");
+  }
+
+  const result = await pool.query(
+    `INSERT INTO tasks (tenant_id, assignee_id, lead_id, title, priority, status, due_at)
+     VALUES ($1, $2, $3, $4, 'medium', 'pending', NOW()) RETURNING id, lead_id, title, status`,
+    [tenantId, assigneeId, leadId, title],
+  );
+
+  const row = result.rows[0];
+  if (row) return mapPipelineTaskRow(row);
+  return { id: result.insertId, text: title, done: false };
+}
+
+async function updateLeadTask(taskId, patch, tenantId = TENANT) {
+  if (!(await dbReady())) {
+    throw new Error("Database not connected");
+  }
+
+  const fields = [];
+  const params = [taskId, tenantId];
+  let idx = 3;
+
+  if (patch.status !== undefined) {
+    fields.push(`status = $${idx}`);
+    params.push(patch.status);
+    idx += 1;
+  }
+  if (patch.status === "done") {
+    fields.push("completed_at = NOW()");
+  }
+  if (patch.status === "pending") {
+    fields.push("completed_at = NULL");
+  }
+
+  if (!fields.length) return null;
+
+  fields.push("updated_at = NOW()");
+  const result = await pool.query(
+    `UPDATE tasks SET ${fields.join(", ")} WHERE id = $1 AND tenant_id = $2 RETURNING id, lead_id, title, status`,
+    params,
+  );
+
+  const row = result.rows[0];
+  return row ? mapPipelineTaskRow(row) : null;
+}
+
 async function getPipelineLeads(tenantId = TENANT) {
   if (!(await dbReady())) return { source: "mock", leads: [] };
 
@@ -251,7 +504,14 @@ async function getPipelineLeads(tenantId = TENANT) {
 
     if (!result.rows.length) return { source: "mock", leads: [] };
 
-    const leads = result.rows.map((row) => ({
+    const tasksByLead = await loadTasksByLeadIds(
+      tenantId,
+      result.rows.map((row) => row.id),
+    );
+
+    const leads = result.rows.map((row) => {
+      const assigneeName = row.assignee_name || null;
+      return {
       id: String(row.id),
       stage: mapStageToPipeline(row.pipeline_stage || row.status),
       name: row.lead_name,
@@ -264,10 +524,22 @@ async function getPipelineLeads(tenantId = TENANT) {
       winProbability: row.win_probability || 50,
       phone: row.phone,
       email: row.email,
+      owner: assigneeName,
+      assignee: assigneeName,
+      assignee_name: assigneeName,
+      employeeName: assigneeName,
+      assigneeId: row.assigned_to || null,
+      assignedTo: assigneeName && row.assigned_to
+        ? { id: row.assigned_to, name: assigneeName, initials: row.assignee_initials }
+        : null,
+      nextFollowUp: row.next_follow_up_at
+        ? new Date(row.next_follow_up_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+        : "",
       activities: [],
-      tasks: [],
+      tasks: tasksByLead[String(row.id)] || [],
       _dbId: row.id,
-    }));
+    };
+    });
 
     return { source: "database", leads, success: true };
   } catch (err) {
@@ -457,8 +729,6 @@ async function listForms(tenantId = TENANT) {
       `SELECT * FROM forms WHERE tenant_id = $1 ORDER BY created_at DESC`,
       [tenantId],
     );
-    if (!result.rows.length) return { source: "mock", forms: mock.FORMS, success: true };
-
     const forms = result.rows.map((r) => ({
       id: r.id,
       name: r.name,
@@ -477,18 +747,63 @@ async function listForms(tenantId = TENANT) {
   }
 }
 
+const SOURCE_LABELS = {
+  google_ads: "Google Ads",
+  instagram: "Instagram",
+  website: "Website",
+  linkedin: "LinkedIn",
+  whatsapp: "WhatsApp",
+};
+
+function normalizeFormRow(data, id) {
+  const sourceKey = data.sourceKey || data.source_key || "website";
+  return {
+    id,
+    name: data.name,
+    source: data.source || SOURCE_LABELS[sourceKey] || "Website",
+    sourceKey,
+    status: data.status || "ACTIVE",
+    service: data.service || "",
+    fields: Array.isArray(data.fields) ? data.fields : [],
+    leads: Number(data.leads) || 0,
+    revenue: Number(data.revenue) || 0,
+    conversion: Number(data.conversion) || 0,
+  };
+}
+
 async function createForm(tenantId, data) {
   const id = data.id || `form-${Date.now()}`;
+  const form = normalizeFormRow(data, id);
   await pool.query(
     `INSERT INTO forms (id, tenant_id, name, source, source_key, status, service, fields, leads, revenue, conversion)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [
-      id, tenantId, data.name, data.source, data.sourceKey || data.source_key,
-      data.status || "ACTIVE", data.service || "", JSON.stringify(data.fields || []),
-      data.leads || 0, data.revenue || 0, data.conversion || 0,
+      id, tenantId, form.name, form.source, form.sourceKey,
+      form.status, form.service, JSON.stringify(form.fields),
+      form.leads, form.revenue, form.conversion,
     ],
   );
-  return { success: true, form: { ...data, id } };
+  return { success: true, form };
+}
+
+async function updateForm(tenantId, id, data) {
+  const form = normalizeFormRow({ ...data, id }, id);
+  const result = await pool.query(
+    `UPDATE forms SET
+      name = $3, source = $4, source_key = $5, status = $6, service = $7,
+      fields = $8, updated_at = NOW()
+     WHERE tenant_id = $1 AND id = $2`,
+    [
+      tenantId, id, form.name, form.source, form.sourceKey,
+      form.status, form.service, JSON.stringify(form.fields),
+    ],
+  );
+  if ((result.rowCount ?? 0) === 0) {
+    const err = new Error("Form not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  return { success: true, form };
 }
 
 async function saveAiInsight(tenantId, insight) {
@@ -571,6 +886,10 @@ module.exports = {
   dbReady,
   getDashboardBundle,
   getPipelineLeads,
+  listLeadTasks,
+  createLeadTask,
+  updateLeadTask,
+  getPipelineStatusGrid,
   updatePipelineLeadStage,
   getReportsBundle,
   getSettings,
@@ -579,6 +898,7 @@ module.exports = {
   createService,
   listForms,
   createForm,
+  updateForm,
   saveAiInsight,
   generateAiInsights,
   getIncentivesData,

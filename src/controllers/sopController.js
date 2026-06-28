@@ -26,6 +26,33 @@ const normalizeSopRow = (sop) => ({
   instruction_steps: parseJsonField(sop.instruction_steps, []),
 });
 
+async function fetchSopById(id) {
+  const result = await pool.query("SELECT * FROM sops WHERE id = $1 LIMIT 1", [id]);
+  return result.rows[0] ? normalizeSopRow(result.rows[0]) : null;
+}
+
+async function insertSopRow(values) {
+  const result = await pool.query(
+    `INSERT INTO sops
+      (title, description, category, status, priority, department, estimated_time, script, questions, frameworks, tags, instruction_steps, attachment_url)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    values,
+  );
+  const insertId = result.insertId ?? result.rows?.[0]?.id;
+  if (!insertId) {
+    const err = new Error("SOP insert failed — no id returned");
+    err.statusCode = 500;
+    throw err;
+  }
+  const sop = await fetchSopById(insertId);
+  if (!sop) {
+    const err = new Error("SOP created but could not be loaded");
+    err.statusCode = 500;
+    throw err;
+  }
+  return sop;
+}
+
 const buildSopValues = (body) => {
   const {
     title,
@@ -56,7 +83,16 @@ const buildSopValues = (body) => {
   }
 
   const steps = Array.isArray(instruction_steps)
-    ? instruction_steps.filter((step) => step?.title?.trim())
+    ? instruction_steps
+        .map((step) => {
+          if (typeof step === "string") {
+            const title = step.trim();
+            return title ? { title } : null;
+          }
+          const title = String(step?.title || step?.text || "").trim();
+          return title ? { step: step?.step, title } : null;
+        })
+        .filter(Boolean)
     : [];
 
   if (steps.length === 0) {
@@ -91,7 +127,7 @@ const buildSopValues = (body) => {
       const sops = sopsResult.rows.map(sop => ({
         ...normalizeSopRow(sop),
         comments: commentsResult.rows
-          .filter(c => c.sop_id === sop.id)
+          .filter(c => Number(c.sop_id) === Number(sop.id))
           .map(c => ({
             id:     c.id,
             author: c.author,
@@ -137,17 +173,11 @@ const buildSopValues = (body) => {
     try {
       const values = buildSopValues(req.body);
 
-      const result = await pool.query(
-        `INSERT INTO sops 
-          (title, description, category, status, priority, department, estimated_time, script, questions, frameworks, tags, instruction_steps, attachment_url)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-         RETURNING *`,
-        values
-      );
+      const sop = await insertSopRow(values);
 
       res.status(201).json({
         success: true,
-        sop: normalizeSopRow(result.rows[0]),
+        sop,
       });
     } catch (error) {
       console.error("Error creating SOP:", error);
@@ -180,21 +210,28 @@ const buildSopValues = (body) => {
           instruction_steps = $12,
           attachment_url = $13,
           updated_at = NOW()
-         WHERE id = $14
-         RETURNING *`,
+         WHERE id = $14`,
         values
       );
 
-      if (result.rows.length === 0) {
+      if ((result.rowCount ?? 0) === 0) {
         return res.status(404).json({
           success: false,
           message: "SOP not found",
         });
       }
 
+      const sop = await fetchSopById(id);
+      if (!sop) {
+        return res.status(500).json({
+          success: false,
+          message: "SOP updated but could not be loaded",
+        });
+      }
+
       res.json({
         success: true,
-        sop: normalizeSopRow(result.rows[0]),
+        sop,
       });
     } catch (error) {
       console.error("Error updating SOP:", error);
@@ -255,31 +292,25 @@ const buildSopValues = (body) => {
   
       const sop = normalizeSopRow(original.rows[0]);
 
-      const result = await pool.query(
-        `INSERT INTO sops
-          (title, description, category, status, priority, department, estimated_time, script, questions, frameworks, tags, instruction_steps, attachment_url)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-         RETURNING *`,
-        [
-          `${sop.title} (Copy)`,
-          sop.description,
-          sop.category,
-          "Draft",
-          sop.priority,
-          sop.department,
-          sop.estimated_time,
-          sop.script,
-          sop.questions || [],
-          sop.frameworks || [],
-          sop.tags || [],
-          sop.instruction_steps || [],
-          sop.attachment_url,
-        ]
-      );
+      const copied = await insertSopRow([
+        `${sop.title} (Copy)`,
+        sop.description,
+        sop.category,
+        "Draft",
+        sop.priority,
+        sop.department,
+        sop.estimated_time,
+        sop.script,
+        sop.questions || [],
+        sop.frameworks || [],
+        sop.tags || [],
+        sop.instruction_steps || [],
+        sop.attachment_url,
+      ]);
 
       res.status(201).json({
         success: true,
-        sop: normalizeSopRow(result.rows[0]),
+        sop: copied,
       });
     } catch (error) {
       console.error("Error duplicating SOP:", error);
