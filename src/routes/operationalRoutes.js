@@ -280,7 +280,18 @@ router.patch("/employee/tasks/:id", asyncRoute(async (req, res) => {
 }));
 
 router.post("/employee/calls", validate(callSchema), asyncRoute(async (req, res) => {
-  const call = await recordCall({ tenantId: tenant(req), data: req.body, actor: actor(req) });
+  const tenantId = tenant(req);
+  const [lead, employee] = await Promise.all([
+    repo.findLeadById(tenantId, req.body.leadId),
+    repo.findEmployeeById(tenantId, req.body.employeeId),
+  ]);
+  if (!lead) {
+    return res.status(400).json({ success: false, message: `Lead ${req.body.leadId} not found` });
+  }
+  if (!employee) {
+    return res.status(400).json({ success: false, message: `Employee ${req.body.employeeId} not found` });
+  }
+  const call = await recordCall({ tenantId, data: req.body, actor: actor(req) });
   return ok(res, call);
 }));
 

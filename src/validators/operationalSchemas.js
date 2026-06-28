@@ -69,6 +69,7 @@ const callSchema = z.object({
   endedAt: z.coerce.date().optional(),
   notes: z.string().optional(),
   aiSummary: z.string().optional(),
+  sopId: z.coerce.number().optional().nullable(),
   checklistProgress: z.array(z.object({
     stepId: z.string(),
     done: z.boolean(),
