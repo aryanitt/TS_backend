@@ -63,12 +63,12 @@ const callSchema = z.object({
   leadId: objectId,
   employeeId: objectId,
   direction: z.enum(["inbound", "outbound"]).optional(),
-  outcome: z.string().optional(),
-  durationSec: z.coerce.number().optional(),
+  outcome: z.string().optional().nullable(),
+  durationSec: z.coerce.number().optional().nullable(),
   startedAt: z.coerce.date().optional(),
   endedAt: z.coerce.date().optional(),
-  notes: z.string().optional(),
-  aiSummary: z.string().optional(),
+  notes: z.string().optional().nullable(),
+  aiSummary: z.string().optional().nullable(),
   sopId: z.coerce.number().optional().nullable(),
   checklistProgress: z.array(z.object({
     stepId: z.string(),
@@ -102,9 +102,9 @@ const meetingSchema = z.object({
   title: z.string().min(1),
   scheduledAt: z.coerce.date(),
   durationMin: z.coerce.number().optional(),
-  meetLink: z.string().optional(),
-  location: z.string().optional(),
-  agenda: z.string().optional(),
+  meetLink: z.string().optional().nullable(),
+  location: z.string().optional().nullable(),
+  agenda: z.string().optional().nullable(),
 });
 
 const meetingPatchSchema = z.object({
