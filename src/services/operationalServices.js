@@ -449,15 +449,19 @@ async function createMeeting({ tenantId, data, actor: a }) {
     payload: { meetingId: meeting.id, scheduledAt: meeting.scheduledAt },
     actor: a,
   });
-  await notify({
-    tenantId,
-    employeeId: data.employeeId,
-    type: "meeting_scheduled",
-    title: "Meeting scheduled",
-    body: data.title,
-    entityType: "meeting",
-    entityId: meeting.id,
-  });
+  try {
+    await notify({
+      tenantId,
+      employeeId: data.employeeId,
+      type: "meeting_scheduled",
+      title: "Meeting scheduled",
+      body: data.title,
+      entityType: "meeting",
+      entityId: meeting.id,
+    });
+  } catch {
+    // Meeting is already saved — notification failure must not fail the request.
+  }
   return meeting;
 }
 
