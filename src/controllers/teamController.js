@@ -162,8 +162,8 @@ const getEmployees = async (req, res) => {
             AND (l.pipeline_stage = 'Converted' OR l.status = 'Converted')) AS revenue
        FROM employees e
        LEFT JOIN employees m ON m.id = e.manager_id
-       WHERE COALESCE(e.status, 'active') <> 'inactive'
-       ORDER BY e.id DESC`,
+       WHERE LOWER(COALESCE(e.status, 'active')) <> 'inactive'
+       ORDER BY e.name ASC`,
     );
     res.json({
       success: true,
