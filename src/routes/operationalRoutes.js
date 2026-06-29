@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const repo = require("../repositories/operationalRepo");
+const { listAllSops } = require("../controllers/sopController");
 const {
   validate,
   createLeadSchema,
@@ -221,16 +222,22 @@ router.get("/employees/:id/leads", asyncRoute(async (req, res) => {
   return ok(res, items);
 }));
 
+router.get("/sops", asyncRoute(async (req, res) => {
+  const sops = await listAllSops();
+  return ok(res, sops);
+}));
+
 router.get("/employee/:employeeId/dashboard", asyncRoute(async (req, res) => {
   const tenantId = tenant(req);
   const employeeId = req.params.employeeId;
-  const [employee, leadsResult, tasks, followups, calls, meetings] = await Promise.all([
+  const [employee, leadsResult, tasks, followups, calls, meetings, sops] = await Promise.all([
     repo.findEmployeeById(tenantId, employeeId),
     repo.listLeads(tenantId, { assignedTo: employeeId }, { page: 1, limit: 500 }),
     repo.listTasks(tenantId, { assigneeId: employeeId, limit: 20 }),
     repo.listFollowups(tenantId, employeeId),
     repo.listCalls(tenantId, employeeId),
     repo.listMeetings(tenantId, employeeId),
+    listAllSops().catch(() => []),
   ]);
   return ok(res, {
     employee,
@@ -239,6 +246,7 @@ router.get("/employee/:employeeId/dashboard", asyncRoute(async (req, res) => {
     followups: followups.slice(0, 20),
     calls: calls.slice(0, 20),
     meetings,
+    sops,
   });
 }));
 
