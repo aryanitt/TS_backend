@@ -20,6 +20,13 @@ const {
 } = require("../validators/operationalSchemas");
 const { requirePg } = require("../middleware/pgReady");
 const {
+  isAdminUser,
+  authenticatedEmployeeId,
+  requireEmployeeSelf,
+  requireEmployeeSelfBody,
+  scopeEmployeeQuery,
+} = require("../middleware/auth");
+const {
   tenant,
   actor,
   createLead,
@@ -64,12 +71,77 @@ function parseRange(req) {
   };
 }
 
+function denyUnlessSelfOrAdmin(req, res, ownerEmployeeId) {
+  if (isAdminUser(req)) return true;
+  const selfId = authenticatedEmployeeId(req);
+  if (!selfId) {
+    res.status(403).json({ success: false, message: "Employee account is not linked to a profile" });
+    return false;
+  }
+  if (Number(ownerEmployeeId) !== selfId) {
+    res.status(403).json({ success: false, message: "You can only access your own data" });
+    return false;
+  }
+  return true;
+}
+
+async function leadAssignedEmployeeId(tenantId, leadId) {
+  const lead = await repo.findLeadById(tenantId, leadId);
+  if (!lead) return { lead: null, assignedId: null };
+  const raw = lead.assignedTo?.id ?? lead.assignedTo;
+  return { lead, assignedId: raw != null ? Number(raw) : null };
+}
+
+function requireEmployeeOwnsLead(paramName = "id") {
+  return asyncRoute(async (req, res, next) => {
+    if (isAdminUser(req)) return next();
+    if (req.user?.role !== "employee") return next();
+    const selfId = authenticatedEmployeeId(req);
+    if (!selfId) {
+      return res.status(403).json({ success: false, message: "Employee account is not linked to a profile" });
+    }
+    const { lead, assignedId } = await leadAssignedEmployeeId(tenant(req), req.params[paramName]);
+    if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
+    if (assignedId !== selfId) {
+      return res.status(403).json({ success: false, message: "This lead is not assigned to you" });
+    }
+    return next();
+  });
+}
+
+function requireEmployeeOwnsLeadBody(field = "leadId") {
+  return asyncRoute(async (req, res, next) => {
+    if (isAdminUser(req)) return next();
+    if (req.user?.role !== "employee") return next();
+    const selfId = authenticatedEmployeeId(req);
+    if (!selfId) {
+      return res.status(403).json({ success: false, message: "Employee account is not linked to a profile" });
+    }
+    const leadId = req.body?.[field];
+    if (!leadId) return next();
+    const { lead, assignedId } = await leadAssignedEmployeeId(tenant(req), leadId);
+    if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
+    if (assignedId !== selfId) {
+      return res.status(403).json({ success: false, message: "This lead is not assigned to you" });
+    }
+    return next();
+  });
+}
+
+function scopeEmployeeLeadList(req) {
+  if (isAdminUser(req)) return;
+  if (req.user?.role !== "employee") return;
+  const selfId = authenticatedEmployeeId(req);
+  if (selfId) req.query.assignedTo = String(selfId);
+}
+
 router.post("/leads", validate(createLeadSchema), asyncRoute(async (req, res) => {
   const result = await createLead(req.body, { tenantId: tenant(req), actor: actor(req) });
   return ok(res, result);
 }));
 
 router.get("/leads", asyncRoute(async (req, res) => {
+  scopeEmployeeLeadList(req);
   const page = Math.max(Number(req.query.page || 1), 1);
   const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 200);
   const { items, total } = await repo.listLeads(
@@ -88,13 +160,13 @@ router.get("/leads", asyncRoute(async (req, res) => {
   return ok(res, items, { page, limit, total });
 }));
 
-router.get("/leads/:id", asyncRoute(async (req, res) => {
+router.get("/leads/:id", requireEmployeeOwnsLead(), asyncRoute(async (req, res) => {
   const lead = await repo.findLeadById(tenant(req), req.params.id, { populate: true });
   if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
   return ok(res, lead);
 }));
 
-router.put("/leads/:id", asyncRoute(async (req, res) => {
+router.put("/leads/:id", requireEmployeeOwnsLead(), asyncRoute(async (req, res) => {
   const lead = await repo.updateLead(tenant(req), req.params.id, { ...req.body, lastActivityAt: new Date() });
   if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
   await writeTimeline({ tenantId: tenant(req), leadId: lead.id, type: "status_change", summary: "Lead updated", payload: req.body, actor: actor(req) });
@@ -102,38 +174,41 @@ router.put("/leads/:id", asyncRoute(async (req, res) => {
 }));
 
 router.delete("/leads/:id", asyncRoute(async (req, res) => {
+  if (req.user?.role === "employee") {
+    return res.status(403).json({ success: false, message: "Employees cannot delete leads" });
+  }
   const lead = await repo.softDeleteLead(tenant(req), req.params.id);
   return ok(res, lead);
 }));
 
-router.get("/leads/:id/timeline", asyncRoute(async (req, res) => {
+router.get("/leads/:id/timeline", requireEmployeeOwnsLead(), asyncRoute(async (req, res) => {
   const events = await repo.listTimeline(tenant(req), { leadId: req.params.id, limit: Number(req.query.limit || 100) });
   return ok(res, events);
 }));
 
-router.patch("/leads/:id/stage", validate(stageSchema), asyncRoute(async (req, res) => {
+router.patch("/leads/:id/stage", validate(stageSchema), requireEmployeeOwnsLead(), asyncRoute(async (req, res) => {
   const lead = await updateLeadStage({ tenantId: tenant(req), leadId: req.params.id, stage: req.body.stage, status: req.body.status, actor: actor(req) });
   return ok(res, lead);
 }));
 
-router.patch("/leads/:id/qualification", asyncRoute(async (req, res) => {
+router.patch("/leads/:id/qualification", requireEmployeeOwnsLead(), asyncRoute(async (req, res) => {
   const lead = await repo.updateLead(tenant(req), req.params.id, { qualification: req.body, lastActivityAt: new Date() });
   await writeTimeline({ tenantId: tenant(req), leadId: req.params.id, type: "qualification", summary: "Qualification updated", payload: req.body, actor: actor(req) });
   return ok(res, lead);
 }));
 
-router.patch("/leads/:id/budget", asyncRoute(async (req, res) => {
+router.patch("/leads/:id/budget", requireEmployeeOwnsLead(), asyncRoute(async (req, res) => {
   const lead = await repo.updateLead(tenant(req), req.params.id, { budget: req.body, lastActivityAt: new Date() });
   await writeTimeline({ tenantId: tenant(req), leadId: req.params.id, type: "budget", summary: "Budget updated", payload: req.body, actor: actor(req) });
   return ok(res, lead);
 }));
 
-router.post("/leads/:id/notes", validate(noteSchema), asyncRoute(async (req, res) => {
+router.post("/leads/:id/notes", validate(noteSchema), requireEmployeeOwnsLead(), asyncRoute(async (req, res) => {
   const note = await addLeadNote({ tenantId: tenant(req), leadId: req.params.id, body: req.body.body, actor: actor(req) });
   return ok(res, note);
 }));
 
-router.get("/leads/:id/notes", asyncRoute(async (req, res) => {
+router.get("/leads/:id/notes", requireEmployeeOwnsLead(), asyncRoute(async (req, res) => {
   const notes = await repo.listNotes(tenant(req), req.params.id);
   return ok(res, notes);
 }));
@@ -154,6 +229,9 @@ router.put("/assignment/config", asyncRoute(async (req, res) => {
 }));
 
 router.post("/assignment/assign", validate(assignSchema), asyncRoute(async (req, res) => {
+  if (req.user?.role === "employee") {
+    req.body.employeeId = authenticatedEmployeeId(req);
+  }
   const lead = await assignLead({
     tenantId: tenant(req),
     leadId: req.body.leadId,
@@ -167,6 +245,9 @@ router.post("/assignment/assign", validate(assignSchema), asyncRoute(async (req,
 }));
 
 router.post("/assignment/bulk-assign", validate(bulkAssignSchema), asyncRoute(async (req, res) => {
+  if (req.user?.role === "employee") {
+    return res.status(403).json({ success: false, message: "Only admins can bulk-assign leads" });
+  }
   const results = await bulkAssign({
     tenantId: tenant(req),
     leadIds: req.body.leadIds,
@@ -217,7 +298,7 @@ router.delete("/employees/:id", asyncRoute(async (req, res) => {
   return ok(res, employee);
 }));
 
-router.get("/employees/:id/leads", asyncRoute(async (req, res) => {
+router.get("/employees/:id/leads", requireEmployeeSelf("id"), asyncRoute(async (req, res) => {
   const { items } = await repo.listLeads(tenant(req), { assignedTo: req.params.id }, { page: 1, limit: 500 });
   return ok(res, items);
 }));
@@ -227,7 +308,7 @@ router.get("/sops", asyncRoute(async (req, res) => {
   return ok(res, sops);
 }));
 
-router.get("/employee/:employeeId/dashboard", asyncRoute(async (req, res) => {
+router.get("/employee/:employeeId/dashboard", requireEmployeeSelf(), asyncRoute(async (req, res) => {
   const tenantId = tenant(req);
   const employeeId = req.params.employeeId;
   const [employee, leadsResult, tasks, followups, calls, meetings, sops] = await Promise.all([
@@ -250,7 +331,7 @@ router.get("/employee/:employeeId/dashboard", asyncRoute(async (req, res) => {
   });
 }));
 
-router.get("/employee/:employeeId/leads", asyncRoute(async (req, res) => {
+router.get("/employee/:employeeId/leads", requireEmployeeSelf(), asyncRoute(async (req, res) => {
   const { items } = await repo.listLeads(
     tenant(req),
     { assignedTo: req.params.employeeId, status: req.query.status, temperature: req.query.temperature },
@@ -259,12 +340,12 @@ router.get("/employee/:employeeId/leads", asyncRoute(async (req, res) => {
   return ok(res, items);
 }));
 
-router.get("/employee/:employeeId/tasks", asyncRoute(async (req, res) => {
+router.get("/employee/:employeeId/tasks", requireEmployeeSelf(), asyncRoute(async (req, res) => {
   const tasks = await repo.listTasks(tenant(req), { assigneeId: req.params.employeeId, status: req.query.status });
   return ok(res, tasks);
 }));
 
-router.post("/employee/tasks", validate(taskSchema), asyncRoute(async (req, res) => {
+router.post("/employee/tasks", validate(taskSchema), requireEmployeeSelfBody("assigneeId"), asyncRoute(async (req, res) => {
   const tenantId = tenant(req);
   const assignee = await repo.findEmployeeById(tenantId, req.body.assigneeId);
   if (!assignee) {
@@ -281,13 +362,17 @@ router.post("/employee/tasks", validate(taskSchema), asyncRoute(async (req, res)
 }));
 
 router.patch("/employee/tasks/:id", asyncRoute(async (req, res) => {
+  const tenantId = tenant(req);
+  const existing = await repo.findTaskById(tenantId, req.params.id);
+  if (!existing) return res.status(404).json({ success: false, message: "Task not found" });
+  if (!denyUnlessSelfOrAdmin(req, res, existing.assigneeId)) return;
   const patch = { ...req.body };
   if (patch.status === "done" && !patch.completedAt) patch.completedAt = new Date();
-  const task = await repo.updateTask(tenant(req), req.params.id, patch);
+  const task = await repo.updateTask(tenantId, req.params.id, patch);
   return ok(res, task);
 }));
 
-router.post("/employee/calls", validate(callSchema), asyncRoute(async (req, res) => {
+router.post("/employee/calls", validate(callSchema), requireEmployeeSelfBody("employeeId"), requireEmployeeOwnsLeadBody("leadId"), asyncRoute(async (req, res) => {
   const tenantId = tenant(req);
   const [lead, employee] = await Promise.all([
     repo.findLeadById(tenantId, req.body.leadId),
@@ -303,27 +388,31 @@ router.post("/employee/calls", validate(callSchema), asyncRoute(async (req, res)
   return ok(res, call);
 }));
 
-router.get("/employee/:employeeId/calls", asyncRoute(async (req, res) => {
+router.get("/employee/:employeeId/calls", requireEmployeeSelf(), asyncRoute(async (req, res) => {
   const calls = await repo.listCalls(tenant(req), req.params.employeeId);
   return ok(res, calls);
 }));
 
-router.post("/employee/followups", validate(followupSchema), asyncRoute(async (req, res) => {
+router.post("/employee/followups", validate(followupSchema), requireEmployeeSelfBody("employeeId"), requireEmployeeOwnsLeadBody("leadId"), asyncRoute(async (req, res) => {
   const followup = await scheduleFollowup({ tenantId: tenant(req), data: req.body, actor: actor(req) });
   return ok(res, followup);
 }));
 
 router.patch("/employee/followups/:id/complete", asyncRoute(async (req, res) => {
-  const followup = await completeFollowup({ tenantId: tenant(req), followupId: req.params.id, actor: actor(req) });
+  const tenantId = tenant(req);
+  const existing = await repo.findFollowupById(tenantId, req.params.id);
+  if (!existing) return res.status(404).json({ success: false, message: "Follow-up not found" });
+  if (!denyUnlessSelfOrAdmin(req, res, existing.employeeId)) return;
+  const followup = await completeFollowup({ tenantId, followupId: req.params.id, actor: actor(req) });
   return ok(res, followup);
 }));
 
-router.get("/employee/:employeeId/followups", asyncRoute(async (req, res) => {
+router.get("/employee/:employeeId/followups", requireEmployeeSelf(), asyncRoute(async (req, res) => {
   const followups = await repo.listFollowups(tenant(req), req.params.employeeId);
   return ok(res, followups);
 }));
 
-router.post("/employee/meetings", validate(meetingSchema), asyncRoute(async (req, res) => {
+router.post("/employee/meetings", validate(meetingSchema), requireEmployeeSelfBody("employeeId"), requireEmployeeOwnsLeadBody("leadId"), asyncRoute(async (req, res) => {
   const tenantId = tenant(req);
   const [lead, employee] = await Promise.all([
     repo.findLeadById(tenantId, req.body.leadId),
@@ -343,17 +432,25 @@ router.post("/employee/meetings", validate(meetingSchema), asyncRoute(async (req
 }));
 
 router.patch("/employee/meetings/:id", validate(meetingPatchSchema), asyncRoute(async (req, res) => {
-  const meeting = await repo.updateMeeting(tenant(req), req.params.id, req.body);
+  const tenantId = tenant(req);
+  const existing = await repo.findMeetingById(tenantId, req.params.id);
+  if (!existing) return res.status(404).json({ success: false, message: "Meeting not found" });
+  if (!denyUnlessSelfOrAdmin(req, res, existing.employeeId)) return;
+  const meeting = await repo.updateMeeting(tenantId, req.params.id, req.body);
   if (!meeting) return res.status(404).json({ success: false, message: "Meeting not found" });
   return ok(res, meeting);
 }));
 
 router.patch("/employee/meetings/:id/mom", validate(momSchema), asyncRoute(async (req, res) => {
-  const meeting = await addMom({ tenantId: tenant(req), meetingId: req.params.id, mom: req.body, actor: actor(req) });
+  const tenantId = tenant(req);
+  const existing = await repo.findMeetingById(tenantId, req.params.id);
+  if (!existing) return res.status(404).json({ success: false, message: "Meeting not found" });
+  if (!denyUnlessSelfOrAdmin(req, res, existing.employeeId)) return;
+  const meeting = await addMom({ tenantId, meetingId: req.params.id, mom: req.body, actor: actor(req) });
   return ok(res, meeting);
 }));
 
-router.get("/employee/:employeeId/meetings", asyncRoute(async (req, res) => {
+router.get("/employee/:employeeId/meetings", requireEmployeeSelf(), asyncRoute(async (req, res) => {
   const meetings = await repo.listMeetings(tenant(req), req.params.employeeId);
   return ok(res, meetings);
 }));
@@ -373,7 +470,7 @@ router.get("/analytics/leaderboard", asyncRoute(async (req, res) => {
   return ok(res, rows);
 }));
 
-router.get("/notifications", asyncRoute(async (req, res) => {
+router.get("/notifications", scopeEmployeeQuery("employeeId"), asyncRoute(async (req, res) => {
   const items = await repo.listNotifications(
     tenant(req),
     { employeeId: req.query.employeeId, unread: req.query.unread === "true" },
@@ -382,7 +479,7 @@ router.get("/notifications", asyncRoute(async (req, res) => {
   return ok(res, items);
 }));
 
-router.post("/notifications/read", asyncRoute(async (req, res) => {
+router.post("/notifications/read", scopeEmployeeQuery("employeeId"), asyncRoute(async (req, res) => {
   await repo.markNotificationsRead(tenant(req), { ids: req.body.ids, employeeId: req.body.employeeId });
   return ok(res, { read: true });
 }));

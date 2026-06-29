@@ -224,6 +224,9 @@ async function assignLead({ tenantId, leadId, employeeId, method = "manual", per
     assignedBy: performedBy,
     assignmentMethod: method,
     assignmentStatus: method === "manual" || method === "bulk" ? "assigned" : "pending",
+    pipelineStage: "New Lead",
+    status: "New Lead",
+    acceptedAt: null,
     lastActivityAt: new Date(),
   });
 
@@ -348,6 +351,15 @@ async function updateLeadStage({ tenantId, leadId, stage, status, actor: a }) {
   if (status) patch.status = status;
   if (stage === "won") patch.convertedAt = new Date();
   if (stage === "lost") patch.lostAt = new Date();
+
+  const leavingNewLead = String(from || "").toLowerCase() === "new lead"
+    && String(stage || "").toLowerCase() !== "new lead"
+    && !lead.acceptedAt
+    && String(lead.assignmentStatus || "").toLowerCase() === "assigned";
+  if (leavingNewLead) {
+    patch.assignmentStatus = "accepted";
+    patch.acceptedAt = new Date();
+  }
 
   const updated = await repo.updateLead(tenantId, leadId, patch);
 

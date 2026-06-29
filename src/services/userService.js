@@ -13,6 +13,57 @@ function buildLoginId(employeeRow, formEmpId) {
   return `EMP-${String(employeeRow.id).padStart(4, "0")}`;
 }
 
+async function findUserById(id) {
+  const result = await pool.query(
+    `SELECT u.*, e.name AS employee_name, e.department AS employee_department, e.role AS employee_role_title
+     FROM users u
+     LEFT JOIN employees e ON e.id = u.employee_id
+     WHERE u.id = $1 LIMIT 1`,
+    [id],
+  );
+  const row = result.rows[0] || null;
+  return row ? resolveEmployeeUserLink(row) : null;
+}
+
+/** Keep users.employee_id aligned with the employee row that shares the same email. */
+async function resolveEmployeeUserLink(userRow) {
+  if (!userRow || userRow.role !== "employee") return userRow;
+
+  const userEmail = normalizeLoginKey(userRow.email);
+  if (!userEmail) return userRow;
+
+  const byEmail = await pool.query(
+    `SELECT id, name, department, role, email
+     FROM employees
+     WHERE LOWER(email) = $1 AND status = 'active'
+     ORDER BY id ASC
+     LIMIT 1`,
+    [userEmail],
+  );
+  const employee = byEmail.rows[0];
+  if (!employee) return userRow;
+
+  const linkedId = userRow.employee_id != null ? Number(userRow.employee_id) : null;
+  const correctId = Number(employee.id);
+
+  if (linkedId !== correctId) {
+    await pool.query(
+      `UPDATE users SET employee_id = $1, updated_at = NOW() WHERE id = $2`,
+      [correctId, userRow.id],
+    );
+    await pool.query(
+      `UPDATE employees SET user_id = $1 WHERE id = $2`,
+      [userRow.id, correctId],
+    );
+    userRow.employee_id = correctId;
+    userRow.employee_name = employee.name;
+    userRow.employee_department = employee.department;
+    userRow.employee_role_title = employee.role;
+  }
+
+  return userRow;
+}
+
 async function findUserByLogin(loginId) {
   const key = normalizeLoginKey(loginId);
   const result = await pool.query(
@@ -23,18 +74,8 @@ async function findUserByLogin(loginId) {
      LIMIT 1`,
     [key],
   );
-  return result.rows[0] || null;
-}
-
-async function findUserById(id) {
-  const result = await pool.query(
-    `SELECT u.*, e.name AS employee_name, e.department AS employee_department, e.role AS employee_role_title
-     FROM users u
-     LEFT JOIN employees e ON e.id = u.employee_id
-     WHERE u.id = $1 LIMIT 1`,
-    [id],
-  );
-  return result.rows[0] || null;
+  const row = result.rows[0] || null;
+  return row ? resolveEmployeeUserLink(row) : null;
 }
 
 async function createUserForEmployee(employee, options = {}) {
@@ -160,17 +201,20 @@ async function ensureAdminUser() {
 
 function serializeUser(row) {
   if (!row) return null;
+  const adminLabel = row.login_id || row.email?.split("@")[0] || "Admin";
   return {
     id: row.id,
     loginId: row.login_id,
     email: row.email,
     role: row.role,
-    employeeId: row.employee_id,
+    employeeId: row.employee_id != null ? Number(row.employee_id) : null,
     status: row.status,
     mustChangePassword: Boolean(row.must_change_password),
-    name: row.role === "employee" ? (row.employee_name || row.email) : "Admin",
+    name: row.role === "employee" ? (row.employee_name || row.email) : adminLabel,
     department: row.employee_department || null,
     employeeRole: row.employee_role_title || null,
+    lastLoginAt: row.last_login_at || null,
+    createdAt: row.created_at || null,
   };
 }
 

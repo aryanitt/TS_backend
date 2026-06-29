@@ -30,7 +30,7 @@ const login = async (req, res) => {
 
     await pool.query(`UPDATE users SET last_login_at = NOW() WHERE id = $1`, [userRow.id]);
 
-    const user = serializeUser(userRow);
+    const user = serializeUser({ ...userRow, last_login_at: new Date() });
     const token = signToken({
       sub: userRow.id,
       role: userRow.role,

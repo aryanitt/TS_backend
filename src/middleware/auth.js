@@ -73,4 +73,87 @@ function requireEmployee(req, res, next) {
   return next();
 }
 
-module.exports = { authenticate, requireAdmin, requireEmployee, applyUserToRequest };
+function isAdminUser(req) {
+  return req.user?.role === "admin";
+}
+
+function authenticatedEmployeeId(req) {
+  const id = req.user?.employeeId;
+  return id == null ? null : Number(id);
+}
+
+function sendSelfAccessDenied(res, message = "You can only access your own data") {
+  return res.status(403).json({ success: false, message });
+}
+
+/** Employees may only read routes scoped to their own :employeeId param. */
+function requireEmployeeSelf(paramName = "employeeId") {
+  return (req, res, next) => {
+    if (isAdminUser(req)) return next();
+    if (req.user?.role !== "employee") {
+      return sendSelfAccessDenied(res, "Employee access required");
+    }
+    const selfId = authenticatedEmployeeId(req);
+    if (!selfId) {
+      return sendSelfAccessDenied(res, "Employee account is not linked to a profile");
+    }
+    if (Number(req.params[paramName]) !== selfId) {
+      return sendSelfAccessDenied(res);
+    }
+    return next();
+  };
+}
+
+/** Force employee write payloads to the authenticated employee id. */
+function requireEmployeeSelfBody(...fields) {
+  const keys = fields.length ? fields : ["employeeId"];
+  return (req, res, next) => {
+    if (isAdminUser(req)) return next();
+    if (req.user?.role !== "employee") {
+      return sendSelfAccessDenied(res, "Employee access required");
+    }
+    const selfId = authenticatedEmployeeId(req);
+    if (!selfId) {
+      return sendSelfAccessDenied(res, "Employee account is not linked to a profile");
+    }
+    for (const key of keys) {
+      const val = req.body?.[key];
+      if (val != null && Number(val) !== selfId) {
+        return sendSelfAccessDenied(res);
+      }
+      req.body[key] = selfId;
+    }
+    return next();
+  };
+}
+
+/** Restrict query/body employeeId filters for logged-in employees. */
+function scopeEmployeeQuery(field = "employeeId") {
+  return (req, res, next) => {
+    if (isAdminUser(req)) return next();
+    if (req.user?.role !== "employee") return next();
+    const selfId = authenticatedEmployeeId(req);
+    if (!selfId) {
+      return sendSelfAccessDenied(res, "Employee account is not linked to a profile");
+    }
+    const existing = req.query?.[field] ?? req.body?.[field];
+    if (existing != null && Number(existing) !== selfId) {
+      return sendSelfAccessDenied(res);
+    }
+    if (req.query) req.query[field] = String(selfId);
+    if (req.body && typeof req.body === "object") req.body[field] = selfId;
+    return next();
+  };
+}
+
+module.exports = {
+  authenticate,
+  requireAdmin,
+  requireEmployee,
+  applyUserToRequest,
+  isAdminUser,
+  authenticatedEmployeeId,
+  requireEmployeeSelf,
+  requireEmployeeSelfBody,
+  scopeEmployeeQuery,
+};
