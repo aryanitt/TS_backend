@@ -324,7 +324,7 @@ async function loadEmployeeDashboard(tenantId, employeeId) {
     leads: leadsResult.items,
     tasks: tasks.slice(0, 20),
     followups: followups.slice(0, 20),
-    calls: calls.slice(0, 20),
+    calls: calls.slice(0, 200),
     meetings,
     sops,
   };
