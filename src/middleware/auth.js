@@ -97,9 +97,8 @@ function requireEmployeeSelf(paramName = "employeeId") {
     if (!selfId) {
       return sendSelfAccessDenied(res, "Employee account is not linked to a profile");
     }
-    if (Number(req.params[paramName]) !== selfId) {
-      return sendSelfAccessDenied(res);
-    }
+    // Always scope to the DB-linked employee id (fixes stale client URLs after profile relink).
+    req.params[paramName] = String(selfId);
     return next();
   };
 }
