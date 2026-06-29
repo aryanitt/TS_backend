@@ -22,6 +22,7 @@ const { requirePg } = require("../middleware/pgReady");
 const {
   isAdminUser,
   authenticatedEmployeeId,
+  requireEmployee,
   requireEmployeeSelf,
   requireEmployeeSelfBody,
   scopeEmployeeQuery,
@@ -308,9 +309,7 @@ router.get("/sops", asyncRoute(async (req, res) => {
   return ok(res, sops);
 }));
 
-router.get("/employee/:employeeId/dashboard", requireEmployeeSelf(), asyncRoute(async (req, res) => {
-  const tenantId = tenant(req);
-  const employeeId = req.params.employeeId;
+async function loadEmployeeDashboard(tenantId, employeeId) {
   const [employee, leadsResult, tasks, followups, calls, meetings, sops] = await Promise.all([
     repo.findEmployeeById(tenantId, employeeId),
     repo.listLeads(tenantId, { assignedTo: employeeId }, { page: 1, limit: 500 }),
@@ -320,7 +319,7 @@ router.get("/employee/:employeeId/dashboard", requireEmployeeSelf(), asyncRoute(
     repo.listMeetings(tenantId, employeeId),
     listAllSops().catch(() => []),
   ]);
-  return ok(res, {
+  return {
     employee,
     leads: leadsResult.items,
     tasks: tasks.slice(0, 20),
@@ -328,7 +327,21 @@ router.get("/employee/:employeeId/dashboard", requireEmployeeSelf(), asyncRoute(
     calls: calls.slice(0, 20),
     meetings,
     sops,
-  });
+  };
+}
+
+router.get("/employee/me/dashboard", requireEmployee, asyncRoute(async (req, res) => {
+  const employeeId = authenticatedEmployeeId(req);
+  if (!employeeId) {
+    return res.status(403).json({ success: false, message: "Employee account is not linked to a profile" });
+  }
+  const payload = await loadEmployeeDashboard(tenant(req), employeeId);
+  return ok(res, payload);
+}));
+
+router.get("/employee/:employeeId/dashboard", requireEmployeeSelf(), asyncRoute(async (req, res) => {
+  const payload = await loadEmployeeDashboard(tenant(req), req.params.employeeId);
+  return ok(res, payload);
 }));
 
 router.get("/employee/:employeeId/leads", requireEmployeeSelf(), asyncRoute(async (req, res) => {

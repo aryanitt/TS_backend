@@ -8,6 +8,11 @@ const {
 } = require("../services/userService");
 const { signToken } = require("../utils/token");
 const pool = require("../../config/db");
+const {
+  isLoginAllowed,
+  recordLoginFailure,
+  clearLoginFailures,
+} = require("../middleware/loginGuard");
 
 const login = async (req, res) => {
   try {
@@ -18,15 +23,26 @@ const login = async (req, res) => {
       return res.status(400).json({ success: false, message: "Login ID and password are required" });
     }
 
+    if (!isLoginAllowed(loginId)) {
+      return res.status(401).json({
+        success: false,
+        message: "Too many failed attempts for this account. Wait a few minutes or contact admin.",
+      });
+    }
+
     const userRow = await findUserByLogin(loginId);
     if (!userRow || userRow.status !== "active") {
+      recordLoginFailure(loginId);
       return res.status(401).json({ success: false, message: "Invalid login ID or password" });
     }
 
     const valid = await verifyPassword(password, userRow.password_hash);
     if (!valid) {
+      recordLoginFailure(loginId);
       return res.status(401).json({ success: false, message: "Invalid login ID or password" });
     }
+
+    clearLoginFailures(loginId);
 
     await pool.query(`UPDATE users SET last_login_at = NOW() WHERE id = $1`, [userRow.id]);
 
