@@ -154,13 +154,19 @@ const getEmployees = async (req, res) => {
         (SELECT COUNT(*) FROM leads l WHERE l.assigned_to = e.id AND l.is_deleted = 0) AS leads,
         (SELECT COUNT(*) FROM leads l
           WHERE l.assigned_to = e.id AND l.is_deleted = 0
-            AND (l.pipeline_stage = 'Converted' OR l.status = 'Converted')) AS conv,
+            AND (
+              LOWER(COALESCE(l.pipeline_stage, '')) IN ('converted', 'won', 'closed won')
+              OR LOWER(COALESCE(l.status, '')) IN ('converted', 'won')
+            )) AS conv,
         (SELECT COUNT(*) FROM leads l
           WHERE l.assigned_to = e.id AND l.is_deleted = 0
             AND ${CONTACTED_LEAD_SQL.replace(/\n\s*/g, " ")}) AS contacted,
         (SELECT COALESCE(SUM(l.expected_revenue), 0) FROM leads l
           WHERE l.assigned_to = e.id AND l.is_deleted = 0
-            AND (l.pipeline_stage = 'Converted' OR l.status = 'Converted')) AS revenue
+            AND (
+              LOWER(COALESCE(l.pipeline_stage, '')) IN ('converted', 'won', 'closed won')
+              OR LOWER(COALESCE(l.status, '')) IN ('converted', 'won')
+            )) AS revenue
        FROM employees e
        LEFT JOIN employees m ON m.id = e.manager_id
        WHERE LOWER(COALESCE(e.status, 'active')) <> 'inactive'
