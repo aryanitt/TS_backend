@@ -352,10 +352,9 @@ async function updateLeadStage({ tenantId, leadId, stage, status, actor: a }) {
   if (stage === "won") patch.convertedAt = new Date();
   if (stage === "lost") patch.lostAt = new Date();
 
-  const leavingNewLead = String(from || "").toLowerCase() === "new lead"
-    && String(stage || "").toLowerCase() !== "new lead"
-    && !lead.acceptedAt
-    && String(lead.assignmentStatus || "").toLowerCase() === "assigned";
+  const leavingNewLead = !lead.acceptedAt
+    && String(lead.assignmentStatus || "").toLowerCase() === "assigned"
+    && !["new lead", "new"].includes(String(stage || "").toLowerCase().trim());
   if (leavingNewLead) {
     patch.assignmentStatus = "accepted";
     patch.acceptedAt = new Date();
