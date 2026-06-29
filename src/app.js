@@ -2,6 +2,9 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 
+const authRoutes = require("./routes/authRoutes");
+const { authenticate } = require("./middleware/auth");
+
 const dashboardRoutes = require("./routes/dashboardRoutes");
 const sopRoutes = require("./routes/soprouter");
 const salesRoutes = require("./routes/salesrouter");
@@ -49,6 +52,34 @@ app.use(cors({
 app.use(express.json());
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: "ts-publications-crm-api",
+    auth: true,
+    authSeed: "/api/auth/seed-status",
+    database: isPgReady() ? "connected" : "disconnected",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/", (req, res) => {
+  res.json({
+    message: "Backend is running successfully",
+    auth: true,
+    authLogin: "/api/auth/login",
+    authSeed: "/api/auth/seed-status",
+    health: "/health",
+    operationalApi: "/api/v1",
+    n8nWebhook: "/api/v1/webhooks/n8n",
+    docs: "/api/docs",
+    database: isPgReady() ? "connected" : "disconnected",
+  });
+});
+
+app.use("/api/auth", authRoutes);
+app.use(authenticate);
+
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/sop", sopRoutes);
 app.use("/api/sales", salesRoutes);
@@ -62,26 +93,6 @@ app.use("/api/forms", formsRoutes);
 app.use("/api/ai", aiRoutes);
 app.use("/api/v1", operationalRoutes);
 mountSwagger(app);
-
-app.get("/health", (req, res) => {
-  res.status(200).json({
-    ok: true,
-    service: "ts-publications-crm-api",
-    database: isPgReady() ? "connected" : "disconnected",
-    timestamp: new Date().toISOString(),
-  });
-});
-
-app.get("/", (req, res) => {
-  res.json({
-    message: "Backend is running successfully",
-    health: "/health",
-    operationalApi: "/api/v1",
-    n8nWebhook: "/api/v1/webhooks/n8n",
-    docs: "/api/docs",
-    database: isPgReady() ? "connected" : "disconnected",
-  });
-});
 
 app.use((err, req, res, next) => {
   logger.error(err);

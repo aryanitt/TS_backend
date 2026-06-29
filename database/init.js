@@ -466,6 +466,32 @@ async function initDatabase() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
 
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        login_id VARCHAR(64) NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        role ENUM('admin', 'employee') NOT NULL DEFAULT 'employee',
+        employee_id INT NULL,
+        status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+        must_change_password TINYINT(1) NOT NULL DEFAULT 1,
+        last_login_at DATETIME NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_users_login_id (login_id),
+        UNIQUE KEY uq_users_email (email),
+        KEY idx_users_employee_id (employee_id),
+        CONSTRAINT fk_users_employee FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+
+    await pool.query(`
+      ALTER TABLE employees ADD COLUMN user_id INT NULL
+    `).catch((error) => {
+      if (error.code !== "ER_DUP_FIELDNAME") throw error;
+    });
+
     const indexes = [
       "CREATE INDEX idx_leads_tenant_assignment ON leads(tenant_id, assignment_status, created_at)",
       "CREATE INDEX idx_leads_tenant_assigned ON leads(tenant_id, assigned_to, pipeline_stage)",
@@ -484,6 +510,12 @@ async function initDatabase() {
     console.log("Database tables ready (MySQL schema)");
     await seedOperationalData(pool);
     await seedCatalogData(pool);
+    try {
+      const { ensureAdminUser } = require("../src/services/userService");
+      await ensureAdminUser();
+    } catch (authErr) {
+      console.warn("Auth seed skipped:", authErr.message);
+    }
   } catch (error) {
     console.error("Database init error:", error.message || error);
     throw error;

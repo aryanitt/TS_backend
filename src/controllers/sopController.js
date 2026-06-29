@@ -118,24 +118,27 @@ const buildSopValues = (body) => {
   ];
 };
 
+async function listAllSops() {
+  const sopsResult = await pool.query("SELECT * FROM sops ORDER BY id DESC");
+  const commentsResult = await pool.query("SELECT * FROM sop_comments ORDER BY created_at ASC");
+
+  return sopsResult.rows.map((sop) => ({
+    ...normalizeSopRow(sop),
+    comments: commentsResult.rows
+      .filter((c) => Number(c.sop_id) === Number(sop.id))
+      .map((c) => ({
+        id: c.id,
+        author: c.author,
+        text: c.text,
+        time: new Date(c.created_at).toLocaleString(),
+      })),
+  }));
+}
+
   // ALL SOPS
   const getAllSops = async (req, res) => {
     try {
-      const sopsResult = await pool.query("SELECT * FROM sops ORDER BY id DESC");
-      const commentsResult = await pool.query("SELECT * FROM sop_comments ORDER BY created_at ASC");
-  
-      const sops = sopsResult.rows.map(sop => ({
-        ...normalizeSopRow(sop),
-        comments: commentsResult.rows
-          .filter(c => Number(c.sop_id) === Number(sop.id))
-          .map(c => ({
-            id:     c.id,
-            author: c.author,
-            text:   c.text,
-            time:   new Date(c.created_at).toLocaleString(),
-          })),
-      }));
-
+      const sops = await listAllSops();
       res.json({ success: true, sops });
     } catch (error) {
       console.error("Error fetching SOPs:", error);
@@ -436,7 +439,7 @@ const buildSopValues = (body) => {
     }
   };
   module.exports = {
-   
+    listAllSops,
     getAllSops,
     getSopDetails,
     createSop,

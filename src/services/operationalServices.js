@@ -224,6 +224,9 @@ async function assignLead({ tenantId, leadId, employeeId, method = "manual", per
     assignedBy: performedBy,
     assignmentMethod: method,
     assignmentStatus: method === "manual" || method === "bulk" ? "assigned" : "pending",
+    pipelineStage: "New Lead",
+    status: "New Lead",
+    acceptedAt: null,
     lastActivityAt: new Date(),
   });
 
@@ -349,6 +352,15 @@ async function updateLeadStage({ tenantId, leadId, stage, status, actor: a }) {
   if (stage === "won") patch.convertedAt = new Date();
   if (stage === "lost") patch.lostAt = new Date();
 
+  const leavingNewLead = String(from || "").toLowerCase() === "new lead"
+    && String(stage || "").toLowerCase() !== "new lead"
+    && !lead.acceptedAt
+    && String(lead.assignmentStatus || "").toLowerCase() === "assigned";
+  if (leavingNewLead) {
+    patch.assignmentStatus = "accepted";
+    patch.acceptedAt = new Date();
+  }
+
   const updated = await repo.updateLead(tenantId, leadId, patch);
 
   await writeTimeline({
@@ -449,15 +461,19 @@ async function createMeeting({ tenantId, data, actor: a }) {
     payload: { meetingId: meeting.id, scheduledAt: meeting.scheduledAt },
     actor: a,
   });
-  await notify({
-    tenantId,
-    employeeId: data.employeeId,
-    type: "meeting_scheduled",
-    title: "Meeting scheduled",
-    body: data.title,
-    entityType: "meeting",
-    entityId: meeting.id,
-  });
+  try {
+    await notify({
+      tenantId,
+      employeeId: data.employeeId,
+      type: "meeting_scheduled",
+      title: "Meeting scheduled",
+      body: data.title,
+      entityType: "meeting",
+      entityId: meeting.id,
+    });
+  } catch {
+    // Meeting is already saved — notification failure must not fail the request.
+  }
   return meeting;
 }
 

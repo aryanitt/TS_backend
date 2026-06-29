@@ -3,6 +3,11 @@ const {
   logActivity,
   createNotification,
 } = require("./activityController");
+const {
+  createUserForEmployee,
+  deactivateUserForEmployee,
+  resetEmployeePassword,
+} = require("../services/userService");
 
 const normalizeStatus = (value) => String(value || "").toLowerCase().trim();
 
@@ -201,6 +206,7 @@ const getEmployees = async (req, res) => {
             AND (l.pipeline_stage = 'Converted' OR l.status = 'Converted')) AS revenue
        FROM employees e
        LEFT JOIN employees m ON m.id = e.manager_id
+       WHERE COALESCE(e.status, 'active') <> 'inactive'
        ORDER BY e.id DESC`,
     );
     res.json({
@@ -231,6 +237,13 @@ const createEmployee = async (req, res) => {
       cash_target, cash_weightage,
     } = req.body;
 
+    if (!email?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required — employees use it to log in",
+      });
+    }
+
     const result = await pool.query(
       `INSERT INTO employees (
         name, email, phone, city, department, role,
@@ -254,7 +267,7 @@ const createEmployee = async (req, res) => {
         $22,$23
       ) RETURNING *`,
       [
-        name, email || null, phone || null, city || null,
+        name, email.trim(), phone || null, city || null,
         department || null, role || null,
         status || "active", work_location || "Office",
         access_level || "Member", notes || null,
@@ -270,6 +283,17 @@ const createEmployee = async (req, res) => {
 
     const employee = result.rows[0];
 
+    let credentials;
+    try {
+      credentials = await createUserForEmployee(employee, { empId: emp_id });
+    } catch (authErr) {
+      await pool.query(`DELETE FROM employees WHERE id = $1`, [employee.id]);
+      return res.status(authErr.statusCode || 500).json({
+        success: false,
+        message: authErr.message || "Failed to create login account",
+      });
+    }
+
     await logActivity({
       action: `Added new employee: ${employee.name}`,
       entity: "employee",
@@ -282,7 +306,15 @@ const createEmployee = async (req, res) => {
   type: "employee",
 });
 
-    res.status(201).json({ success: true, employee });
+    res.status(201).json({
+      success: true,
+      employee,
+      credentials: {
+        loginId: credentials.loginId,
+        email: credentials.email,
+        password: credentials.tempPassword,
+      },
+    });
 
   } catch (error) {
     console.error("Error creating employee:", error);
@@ -529,25 +561,50 @@ const deleteEmployee = async (req, res) => {
     const employeeName = findResult.rows[0].name;
     const employeeRole = findResult.rows[0].role;
 
-    await pool.query("DELETE FROM employees WHERE id=$1", [parseInt(id)]);
+    await deactivateUserForEmployee(parseInt(id));
 
     await logActivity({
-      action: `Deleted employee: ${employeeName}`,
+      action: `Removed employee from team: ${employeeName}`,
       entity: "employee",
       entity_id: parseInt(id),
     });
 
    await createNotification({
   title: `${employeeName} was removed`,
-  message: `${employeeName} (${employeeRole || "team member"}) has been removed from the team`,
+  message: `${employeeName} (${employeeRole || "team member"}) login disabled and marked inactive`,
   type: "employee",
 });
 
-    res.json({ success: true, message: "Employee deleted successfully" });
+    res.json({ success: true, message: "Employee removed from team (login disabled)" });
 
   } catch (error) {
     console.error("Error deleting employee:", error);
     res.status(500).json({ success: false, message: "Failed to delete employee", error: error.message });
+  }
+};
+
+const resetEmployeeCredentials = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id || id === "undefined") {
+      return res.status(400).json({ success: false, message: "Invalid employee ID" });
+    }
+
+    const credentials = await resetEmployeePassword(parseInt(id, 10));
+    return res.json({
+      success: true,
+      credentials: {
+        loginId: credentials.loginId,
+        email: credentials.email,
+        password: credentials.tempPassword,
+      },
+    });
+  } catch (error) {
+    console.error("Reset password error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to reset password",
+    });
   }
 };
 
@@ -774,6 +831,7 @@ module.exports = {
   createEmployee,
   updateEmployee,
   deleteEmployee,
+  resetEmployeeCredentials,
   getTeamKPIs,
   getChartData,
 };

@@ -1003,6 +1003,22 @@ async function insertTask(data) {
   return mapTask(result.rows[0]);
 }
 
+async function findTaskById(tenantId, taskId) {
+  const result = await pool.query(
+    `SELECT * FROM tasks WHERE id = $1 AND tenant_id = $2 LIMIT 1`,
+    [taskId, tenantId],
+  );
+  return mapTask(result.rows[0]);
+}
+
+async function findMeetingById(tenantId, meetingId) {
+  const result = await pool.query(
+    `SELECT * FROM meetings WHERE id = $1 AND tenant_id = $2 LIMIT 1`,
+    [meetingId, tenantId],
+  );
+  return mapMeeting(result.rows[0]);
+}
+
 async function updateTask(tenantId, taskId, patch) {
   const fields = [];
   const params = [taskId, tenantId];
@@ -1301,6 +1317,7 @@ module.exports = {
   insertCall,
   listCalls,
   insertTask,
+  findTaskById,
   updateTask,
   listTasks,
   insertFollowup,
@@ -1309,6 +1326,7 @@ module.exports = {
   listFollowups,
   listDueFollowups,
   insertMeeting,
+  findMeetingById,
   updateMeeting,
   listMeetings,
   insertFileAsset,
