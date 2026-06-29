@@ -11,6 +11,7 @@ const {
 const {
   computeLeadStats,
   buildLeadFunnel,
+  buildStageBreakdown,
   CONTACTED_LEAD_SQL,
 } = require("../utils/leadStats");
 
@@ -408,6 +409,7 @@ const getEmployeeLeads = async (req, res) => {
         business: l.business_name || "",
       }));
     const funnel = buildLeadFunnel(stats);
+    const stageBreakdown = buildStageBreakdown(leads);
 
     res.json({
       success: true,
@@ -415,6 +417,7 @@ const getEmployeeLeads = async (req, res) => {
       stats,
       activity,
       funnel,
+      stageBreakdown,
     });
   } catch (error) {
     console.error("Error fetching employee leads:", error);

@@ -8,13 +8,21 @@ function leadStatus(lead) {
   return normalize(lead.status);
 }
 
+function isStillNewAssigned(lead) {
+  if (lead.accepted_at || lead.acceptedAt) return false;
+  const assignStatus = normalize(lead.assignment_status || lead.assignmentStatus);
+  if (assignStatus === "accepted" || assignStatus === "in_progress") return false;
+  const stage = leadStage(lead);
+  if (!["new", "new lead"].includes(stage)) return false;
+  return assignStatus === "assigned" || assignStatus === "pending" || assignStatus === "unassigned";
+}
+
 function isUnworked(lead) {
   const stage = leadStage(lead);
   const status = leadStatus(lead);
-  if (["new", "new lead"].includes(stage) || ["new", "new lead"].includes(status)) return true;
+  if (isStillNewAssigned(lead)) return true;
   if (stage.includes("not pick") || status.includes("not pick") || status === "notpick") return true;
-  const assignStatus = normalize(lead.assignment_status || lead.assignmentStatus);
-  if (assignStatus === "assigned" && !lead.accepted_at && !lead.acceptedAt) return true;
+  if (["new", "new lead"].includes(stage) || ["new", "new lead"].includes(status)) return true;
   return false;
 }
 
@@ -73,6 +81,45 @@ function computeLeadStats(leads = []) {
   };
 }
 
+function mapLeadKanbanStage(lead) {
+  if (isStillNewAssigned(lead)) return "new_lead";
+  const stage = leadStage(lead);
+  const status = leadStatus(lead);
+  if (stage.includes("not pick") || status === "notpick" || status.includes("not pick")) return "not_pick";
+  if (stage.includes("negotiation") || status.includes("negotiation")) return "negotiation";
+  if (stage.includes("proposal") || status.includes("proposal")) return "proposal";
+  if (stage === "converted" || status === "converted" || stage.includes("won")) return "converted";
+  if (stage.includes("booked") || stage.includes("call booked")) return "booked";
+  if (stage.includes("contacted") || stage.includes("qualified")) return "contacted";
+  if (stage.includes("attempted") || status.includes("attempted")) return "attempted";
+  return "attempted";
+}
+
+const STAGE_BREAKDOWN = [
+  { id: "new_lead", label: "New Lead" },
+  { id: "not_pick", label: "Not Pick" },
+  { id: "attempted", label: "Attempted" },
+  { id: "contacted", label: "Contacted" },
+  { id: "booked", label: "Booked" },
+  { id: "proposal", label: "Proposal" },
+  { id: "negotiation", label: "Negotiation" },
+  { id: "converted", label: "Converted" },
+];
+
+function buildStageBreakdown(leads = []) {
+  const counts = Object.fromEntries(STAGE_BREAKDOWN.map((s) => [s.id, 0]));
+  for (const lead of leads) {
+    const id = mapLeadKanbanStage(lead);
+    if (counts[id] != null) counts[id] += 1;
+  }
+  const max = Math.max(1, ...Object.values(counts));
+  return STAGE_BREAKDOWN.map((s) => ({
+    label: s.label,
+    count: counts[s.id] || 0,
+    pct: Math.round(((counts[s.id] || 0) / max) * 100),
+  }));
+}
+
 function buildLeadFunnel(stats) {
   return [
     { name: "Assigned", value: stats.totalLeads || 0 },
@@ -106,6 +153,7 @@ const CONTACTED_LEAD_SQL = `
 module.exports = {
   computeLeadStats,
   buildLeadFunnel,
+  buildStageBreakdown,
   CONTACTED_LEAD_SQL,
   isContacted,
   isQualified,
