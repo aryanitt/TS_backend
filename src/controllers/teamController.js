@@ -8,56 +8,11 @@ const {
   deactivateUserForEmployee,
   resetEmployeePassword,
 } = require("../services/userService");
-
-const normalizeStatus = (value) => String(value || "").toLowerCase().trim();
-
-function computeLeadStats(leads) {
-  const isConverted = (l) =>
-    normalizeStatus(l.pipeline_stage) === "converted" ||
-    normalizeStatus(l.status) === "converted";
-  const isQualified = (l) => {
-    const stage = normalizeStatus(l.pipeline_stage);
-    const status = normalizeStatus(l.status);
-    return (
-      ["qualified", "proposal", "proposal sent", "negotiation", "converted", "warm", "hot"].some((k) => stage.includes(k)) ||
-      ["qualified", "warm lead", "hot lead", "proposal sent", "negotiation", "converted"].includes(status)
-    );
-  };
-  const isMeeting = (l) => {
-    const stage = normalizeStatus(l.pipeline_stage);
-    const status = normalizeStatus(l.status);
-    return status.includes("meeting") || ["proposal", "proposal sent", "negotiation"].includes(stage);
-  };
-  const isContacted = (l) =>
-    !["new", "new lead"].includes(normalizeStatus(l.pipeline_stage)) &&
-    normalizeStatus(l.status) !== "new lead";
-
-  const convertedLeads = leads.filter(isConverted);
-  return {
-    totalLeads: leads.length,
-    qualified: leads.filter(isQualified).length,
-    totalMeetings: leads.filter(isMeeting).length,
-    converted: convertedLeads.length,
-    revenue: convertedLeads.reduce(
-      (sum, l) => sum + (Number(l.expected_revenue ?? l.revenue) || 0),
-      0,
-    ),
-    contacted: leads.filter(isContacted).length,
-    followUps: leads.filter((l) =>
-      ["not interested", "not attending", "call back later"].includes(normalizeStatus(l.status)),
-    ).length,
-  };
-}
-
-function buildLeadFunnel(stats) {
-  return [
-    { name: "Assigned", value: stats.totalLeads },
-    { name: "Contacted", value: stats.contacted },
-    { name: "Qualified", value: stats.qualified },
-    { name: "Meeting", value: stats.totalMeetings },
-    { name: "Converted", value: stats.converted },
-  ];
-}
+const {
+  computeLeadStats,
+  buildLeadFunnel,
+  CONTACTED_LEAD_SQL,
+} = require("../utils/leadStats");
 
 function mapLeadRow(row) {
   return {
@@ -79,6 +34,8 @@ function mapLeadRow(row) {
     priority: row.priority,
     win_probability: row.win_probability,
     follow_up: row.follow_up || row.next_follow_up_at,
+    assignment_status: row.assignment_status,
+    accepted_at: row.accepted_at,
   };
 }
 
@@ -199,8 +156,7 @@ const getEmployees = async (req, res) => {
             AND (l.pipeline_stage = 'Converted' OR l.status = 'Converted')) AS conv,
         (SELECT COUNT(*) FROM leads l
           WHERE l.assigned_to = e.id AND l.is_deleted = 0
-            AND LOWER(COALESCE(l.pipeline_stage, '')) NOT IN ('new', 'new lead')
-            AND LOWER(COALESCE(l.status, '')) <> 'new lead') AS contacted,
+            AND ${CONTACTED_LEAD_SQL.replace(/\n\s*/g, " ")}) AS contacted,
         (SELECT COALESCE(SUM(l.expected_revenue), 0) FROM leads l
           WHERE l.assigned_to = e.id AND l.is_deleted = 0
             AND (l.pipeline_stage = 'Converted' OR l.status = 'Converted')) AS revenue
@@ -341,7 +297,7 @@ const getEmployeeDetails = async (req, res) => {
     const leadResult = await pool.query(
       `SELECT id, lead_name, company_name, email, phone, city, form_name, temperature,
               expected_revenue, pipeline_stage, status, created_at, updated_at, source,
-              priority, win_probability, next_follow_up_at
+              priority, win_probability, next_follow_up_at, assignment_status, accepted_at
        FROM leads
        WHERE assigned_to = $1 AND is_deleted = 0
        ORDER BY updated_at DESC`,
@@ -365,7 +321,7 @@ const getEmployeeDetails = async (req, res) => {
         manager_name: employee.manager_name || null,
         stats,
         achieved: {
-          calls: stats.contacted || stats.totalLeads,
+          calls: stats.contacted,
           qualifiedLeads: stats.qualified,
           meetings: stats.totalMeetings,
           cash: stats.revenue,
@@ -418,7 +374,7 @@ const getEmployeeLeads = async (req, res) => {
       const result = await pool.query(
         `SELECT id, lead_name, company_name, email, phone, city, form_name, temperature,
                 expected_revenue, pipeline_stage, status, created_at, updated_at, source,
-                priority, win_probability, next_follow_up_at
+                priority, win_probability, next_follow_up_at, assignment_status, accepted_at
          FROM leads
          WHERE assigned_to = $1 AND is_deleted = 0
          ORDER BY updated_at DESC`,
@@ -427,7 +383,7 @@ const getEmployeeLeads = async (req, res) => {
       leads = result.rows.map(mapLeadRow);
     }
 
-    if (!leads.length && empName) {
+    if (!leads.length && empName && !empId) {
       const legacy = await pool.query(
         `SELECT id, lead_name, business_name, email, phone, city, form_name, temperature,
                 expected_revenue, pipeline_stage, status, submitted_time, updated_at,
