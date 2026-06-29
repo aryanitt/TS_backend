@@ -77,7 +77,16 @@ const me = async (req, res) => {
 
 const changePasswordHandler = async (req, res) => {
   try {
+    if (!req.user?.id) {
+      return res.status(401).json({ success: false, message: "Authentication required" });
+    }
     const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Current password and new password are required",
+      });
+    }
     await changePassword(req.user.id, currentPassword, newPassword);
     const userRow = await findUserById(req.user.id);
     return res.json({ success: true, user: serializeUser(userRow) });

@@ -29,9 +29,17 @@ function applyUserToRequest(req, userRow) {
     : String(user.id);
 }
 
+function requestApiPath(req) {
+  const fromOriginal = req.originalUrl?.split("?")[0];
+  if (fromOriginal?.startsWith("/api")) return fromOriginal;
+  const combined = `${req.baseUrl || ""}${req.path || ""}`;
+  return combined.startsWith("/") ? combined : `/${combined}`;
+}
+
 async function authenticate(req, res, next) {
-  if (!req.path.startsWith("/api")) return next();
-  if (isPublicApiPath(req.path)) return next();
+  const apiPath = requestApiPath(req);
+  if (!apiPath.startsWith("/api")) return next();
+  if (isPublicApiPath(apiPath)) return next();
 
   const token = extractBearer(req);
   if (!token) {
