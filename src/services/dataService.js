@@ -570,10 +570,10 @@ async function updatePipelineLeadStage(leadId, stage, tenantId = TENANT) {
 async function getReportsBundle(tenantId = TENANT) {
   const fallback = {
     kpis: {
-      totalRevenue: { value: "$1.24M", growth: "+18.4%", comparison: "vs last month" },
+      totalRevenue: { value: "₹1.24Cr", growth: "+18.4%", comparison: "vs last month" },
       conversionRate: { value: "24.6%", growth: "+3.1%", comparison: "vs last month" },
       momGrowth: { value: "12.8%", growth: "+2.4%", comparison: "vs last month" },
-      forecastQ3: { value: "$1.62M", growth: "+22%", comparison: "vs last month" },
+      forecastQ3: { value: "₹1.62Cr", growth: "+22%", comparison: "vs last month" },
     },
     aiSummary: mock.aiInsights.map((i) => i.body),
     revenueAnalytics: mock.revenueSeries.map((r) => ({ month: r.month, revenue: r.revenue * 10000 })),
