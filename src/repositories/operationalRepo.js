@@ -366,8 +366,8 @@ async function insertLead(tenantId, data) {
 async function findLeadById(tenantId, leadId, { populate = false } = {}) {
   const result = await pool.query(
     populate
-      ? `SELECT ${LEAD_SELECT} FROM leads l LEFT JOIN employees e ON e.id = l.assigned_to WHERE l.id = $1 AND l.tenant_id = $2 AND l.is_deleted = false`
-      : `SELECT * FROM leads WHERE id = $1 AND tenant_id = $2 AND is_deleted = false`,
+      ? `SELECT ${LEAD_SELECT} FROM leads l LEFT JOIN employees e ON e.id = l.assigned_to WHERE l.id = $1 AND l.tenant_id = $2 AND l.is_deleted = 0`
+      : `SELECT * FROM leads WHERE id = $1 AND tenant_id = $2 AND is_deleted = 0`,
     [leadId, tenantId],
   );
   const row = result.rows[0];
@@ -376,7 +376,7 @@ async function findLeadById(tenantId, leadId, { populate = false } = {}) {
 }
 
 async function listLeads(tenantId, filters = {}, { page = 1, limit = 50 } = {}) {
-  const conditions = ["l.tenant_id = $1", "l.is_deleted = false"];
+  const conditions = ["l.tenant_id = $1", "l.is_deleted = 0"];
   const params = [tenantId];
   let idx = 2;
 
@@ -478,7 +478,7 @@ async function updateLead(tenantId, leadId, patch) {
 
   fields.push("updated_at = NOW()");
   const result = await pool.query(
-    `UPDATE leads SET ${fields.join(", ")} WHERE tenant_id = $1 AND id = $2 AND is_deleted = false RETURNING *`,
+    `UPDATE leads SET ${fields.join(", ")} WHERE tenant_id = $1 AND id = $2 AND is_deleted = 0 RETURNING *`,
     params,
   );
   return mapLead(result.rows[0]);
@@ -1206,7 +1206,7 @@ async function getAdminKpis(tenantId, range = {}) {
       COUNT(*) FILTER (WHERE pipeline_stage = 'won')::int AS conversions,
       COALESCE(SUM(expected_revenue) FILTER (WHERE pipeline_stage = 'won'), 0)::float AS revenue
      FROM leads
-     WHERE tenant_id = $1 AND is_deleted = false ${dateFilter}`,
+     WHERE tenant_id = $1 AND is_deleted = 0 ${dateFilter}`,
     params,
   );
 
@@ -1225,7 +1225,7 @@ async function getPipelineGrouped(tenantId, filters = {}) {
   const params = [tenantId];
   let sql = `
     SELECT pipeline_stage AS stage, COUNT(*)::int AS count, COALESCE(SUM(expected_revenue), 0)::float AS value
-    FROM leads WHERE tenant_id = $1 AND is_deleted = false
+    FROM leads WHERE tenant_id = $1 AND is_deleted = 0
   `;
   let idx = 2;
   if (filters.assignedTo) {
@@ -1251,7 +1251,7 @@ async function getLeaderboard(tenantId, limit = 10) {
       e.name, e.email, e.role, e.department
      FROM leads l
      JOIN employees e ON e.id = l.assigned_to
-     WHERE l.tenant_id = $1 AND l.pipeline_stage = 'won' AND l.is_deleted = false
+     WHERE l.tenant_id = $1 AND l.pipeline_stage = 'won' AND l.is_deleted = 0
      GROUP BY l.assigned_to, e.name, e.email, e.role, e.department
      ORDER BY conversions DESC, revenue DESC
      LIMIT $2`,

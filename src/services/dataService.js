@@ -14,13 +14,16 @@ function formatINR(amount) {
 function rangeToDates(rangeKey) {
   const now = new Date();
   const end = new Date(now);
+  end.setHours(23, 59, 59, 999);
   let start = new Date(now);
   if (rangeKey === "today") {
     start.setHours(0, 0, 0, 0);
   } else if (rangeKey === "week") {
-    start.setDate(start.getDate() - 7);
+    start.setDate(start.getDate() - start.getDay());
+    start.setHours(0, 0, 0, 0);
   } else if (rangeKey === "month") {
-    start.setMonth(start.getMonth() - 1);
+    start = new Date(now.getFullYear(), now.getMonth(), 1);
+    start.setHours(0, 0, 0, 0);
   } else {
     start = null;
   }
@@ -132,18 +135,8 @@ function buildPipelineStatusGrid(rows) {
 }
 
 async function queryPipelineLeadRows(tenantId, rangeKey = "week", service = "All Services") {
-  const { start, end } = rangeToDates(rangeKey);
   const params = [tenantId];
   let where = "l.tenant_id = $1 AND l.is_deleted = 0";
-
-  if (start) {
-    params.push(start);
-    where += ` AND l.created_at >= $${params.length}`;
-  }
-  if (end && rangeKey === "today") {
-    params.push(end);
-    where += ` AND l.created_at <= $${params.length}`;
-  }
 
   if (service && service !== "All Services") {
     params.push(`%${service}%`);
@@ -160,22 +153,12 @@ async function queryPipelineLeadRows(tenantId, rangeKey = "week", service = "All
 
   if (result.rows.length) return result.rows;
 
-  const legacyParams = [];
   let legacyWhere = "1=1";
-  if (start) {
-    legacyParams.push(start);
-    legacyWhere += ` AND submitted_time >= $${legacyParams.length}`;
-  }
-  if (end && rangeKey === "today") {
-    legacyParams.push(end);
-    legacyWhere += ` AND submitted_time <= $${legacyParams.length}`;
-  }
-
   const legacy = await pool.query(
     `SELECT pipeline_stage, status, temperature, NULL AS priority, form_name
      FROM emp_leads
      WHERE ${legacyWhere}`,
-    legacyParams,
+    [],
   );
   return legacy.rows;
 }
@@ -213,29 +196,40 @@ async function dbReady() {
 
 async function queryLeadsStats(tenantId, rangeKey) {
   const { start, end } = rangeToDates(rangeKey);
-  const params = [tenantId];
-  let dateFilter = "";
-  if (start) {
-    params.push(start);
-    dateFilter += ` AND created_at >= $${params.length}`;
-  }
-  if (end && rangeKey === "today") {
-    params.push(end);
-    dateFilter += ` AND created_at <= $${params.length}`;
-  }
-
-  const result = await pool.query(
+  const baseResult = await pool.query(
     `SELECT
       COUNT(*) AS total_leads,
       COALESCE(SUM(expected_revenue), 0) AS pipeline_value,
-      SUM(CASE WHEN pipeline_stage IN ('Qualified','Call Booked','Proposal Sent','Negotiation','Converted') OR status IN ('Qualified','Call Booked','Proposal Sent','Negotiation','Converted') THEN 1 ELSE 0 END) AS qualified,
+      SUM(CASE WHEN pipeline_stage IN ('Qualified','Call Booked','Proposal Sent','Negotiation','Converted') OR status IN ('Qualified','Call Booked','Proposal Sent','Negotiation','Converted') THEN 1 ELSE 0 END) AS qualified
+     FROM leads
+     WHERE tenant_id = $1 AND is_deleted = 0`,
+    [tenantId],
+  );
+
+  const params = [tenantId];
+  let periodFilter = "";
+  if (start) {
+    params.push(start);
+    periodFilter += ` AND created_at >= $${params.length}`;
+  }
+  if (end && rangeKey === "today") {
+    params.push(end);
+    periodFilter += ` AND created_at <= $${params.length}`;
+  }
+
+  const periodResult = await pool.query(
+    `SELECT
       SUM(CASE WHEN pipeline_stage = 'Converted' OR status = 'Converted' THEN 1 ELSE 0 END) AS conversions,
       COALESCE(SUM(CASE WHEN pipeline_stage = 'Converted' OR status = 'Converted' THEN expected_revenue ELSE 0 END), 0) AS revenue
      FROM leads
-     WHERE tenant_id = $1 AND is_deleted = 0 ${dateFilter}`,
+     WHERE tenant_id = $1 AND is_deleted = 0 ${periodFilter}`,
     params,
   );
-  return result.rows[0] || {};
+
+  return {
+    ...(baseResult.rows[0] || {}),
+    ...(periodResult.rows[0] || {}),
+  };
 }
 
 async function queryLeaderboard(tenantId, rangeKey, limit = 3) {
