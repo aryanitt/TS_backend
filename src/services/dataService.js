@@ -217,7 +217,17 @@ async function queryLeadsStats(tenantId) {
      WHERE tenant_id = $1 AND is_deleted = 0`,
     [tenantId],
   );
-  return result.rows[0] || {};
+
+  const cashResult = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0) AS cash_collected
+     FROM cash_collections
+     WHERE tenant_id = $1`,
+    [tenantId],
+  );
+
+  const row = result.rows[0] || {};
+  row.cash_collected = cashResult.rows[0]?.cash_collected || 0;
+  return row;
 }
 
 async function queryLeaderboard(tenantId, rangeKey, limit = 3) {
@@ -268,12 +278,13 @@ async function buildFilterDataFromDb(tenantId) {
     const conversions = Number(stats.conversions) || 0;
     const revenue = Number(stats.revenue) || 0;
     const pipeline = Number(stats.pipeline_value) || 0;
+    const cashCollected = Number(stats.cash_collected) || 0;
     const convRate = total ? Math.round((conversions / total) * 100) : 0;
 
     filterData[range] = {
       kpis: [
         { label: "Revenue", value: formatINR(revenue), icon: "DollarSign" },
-        { label: "Cash Collected", value: formatINR(revenue * 0.65), icon: "Users" },
+        { label: "Cash Collected", value: formatINR(cashCollected), icon: "Users" },
         { label: "Conversion Rate", value: `${convRate}%`, icon: "Activity" },
         { label: "Qualified Leads", value: String(qualified), icon: "FileText" },
         { label: "Pipeline Value", value: formatINR(pipeline), icon: "DollarSign" },

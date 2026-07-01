@@ -1210,10 +1210,18 @@ async function getAdminKpis(tenantId, range = {}) {
     params,
   );
 
+  const cashResult = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0)::float AS cash_collected
+     FROM cash_collections
+     WHERE tenant_id = $1`,
+    [tenantId],
+  );
+
   const row = result.rows[0];
+  const cashCollected = cashResult.rows[0]?.cash_collected || 0;
   return {
     revenue: row.revenue || 0,
-    cashCollected: row.revenue || 0,
+    cashCollected,
     conversionRate: row.total_leads ? Math.round(((row.conversions || 0) / row.total_leads) * 100) : 0,
     qualifiedLeads: row.qualified || 0,
     pipelineValue: row.pipeline_value || 0,
@@ -1241,6 +1249,112 @@ async function getPipelineGrouped(tenantId, filters = {}) {
   sql += ` GROUP BY pipeline_stage ORDER BY pipeline_stage`;
   const result = await pool.query(sql, params);
   return result.rows.map((r) => ({ _id: r.stage, count: r.count, value: r.value }));
+}
+
+function mapCashCollection(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    leadId: row.lead_id,
+    employeeId: row.employee_id,
+    amount: Number(row.amount) || 0,
+    currency: row.currency || "INR",
+    paymentMode: row.payment_mode,
+    paymentAt: row.payment_at,
+    transactionId: row.transaction_id,
+    slipUrl: row.slip_url,
+    slipFilename: row.slip_filename,
+    notes: row.notes,
+    recordedBy: row.recorded_by,
+    leadName: row.lead_name,
+    companyName: row.company_name,
+    employeeName: row.employee_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function insertCashCollection(data) {
+  const result = await pool.query(
+    `INSERT INTO cash_collections
+      (tenant_id, lead_id, employee_id, amount, currency, payment_mode, payment_at,
+       transaction_id, slip_url, slip_filename, notes, recorded_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+     RETURNING *`,
+    [
+      data.tenantId,
+      data.leadId,
+      data.employeeId || null,
+      data.amount,
+      data.currency || "INR",
+      data.paymentMode,
+      data.paymentAt,
+      data.transactionId || null,
+      data.slipUrl || null,
+      data.slipFilename || null,
+      data.notes || null,
+      data.recordedBy || null,
+    ],
+  );
+  return mapCashCollection(result.rows[0]);
+}
+
+async function listCashCollectionsByLead(tenantId, leadId) {
+  const result = await pool.query(
+    `SELECT cc.*, l.lead_name, l.company_name, e.name AS employee_name
+     FROM cash_collections cc
+     LEFT JOIN leads l ON l.id = cc.lead_id
+     LEFT JOIN employees e ON e.id = cc.employee_id
+     WHERE cc.tenant_id = $1 AND cc.lead_id = $2
+     ORDER BY cc.payment_at DESC, cc.id DESC`,
+    [tenantId, leadId],
+  );
+  return result.rows.map(mapCashCollection);
+}
+
+async function listCashCollectionsByEmployee(tenantId, employeeId, limit = 200) {
+  const result = await pool.query(
+    `SELECT cc.*, l.lead_name, l.company_name, e.name AS employee_name
+     FROM cash_collections cc
+     LEFT JOIN leads l ON l.id = cc.lead_id
+     LEFT JOIN employees e ON e.id = cc.employee_id
+     WHERE cc.tenant_id = $1 AND cc.employee_id = $2
+     ORDER BY cc.payment_at DESC, cc.id DESC
+     LIMIT $3`,
+    [tenantId, employeeId, limit],
+  );
+  return result.rows.map(mapCashCollection);
+}
+
+async function sumCashByEmployee(tenantId, employeeId) {
+  const result = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0)::float AS total
+     FROM cash_collections
+     WHERE tenant_id = $1 AND employee_id = $2`,
+    [tenantId, employeeId],
+  );
+  return Number(result.rows[0]?.total) || 0;
+}
+
+async function sumCashByLead(tenantId, leadId) {
+  const result = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0)::float AS total
+     FROM cash_collections
+     WHERE tenant_id = $1 AND lead_id = $2`,
+    [tenantId, leadId],
+  );
+  return Number(result.rows[0]?.total) || 0;
+}
+
+async function sumCashByTenant(tenantId) {
+  const result = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0)::float AS total
+     FROM cash_collections
+     WHERE tenant_id = $1`,
+    [tenantId],
+  );
+  return Number(result.rows[0]?.total) || 0;
 }
 
 async function getLeaderboard(tenantId, limit = 10) {
@@ -1330,6 +1444,12 @@ module.exports = {
   updateMeeting,
   listMeetings,
   insertFileAsset,
+  insertCashCollection,
+  listCashCollectionsByLead,
+  listCashCollectionsByEmployee,
+  sumCashByEmployee,
+  sumCashByLead,
+  sumCashByTenant,
   getAdminKpis,
   getPipelineGrouped,
   getLeaderboard,

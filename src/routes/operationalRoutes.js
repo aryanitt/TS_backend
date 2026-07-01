@@ -17,6 +17,7 @@ const {
   meetingSchema,
   meetingPatchSchema,
   momSchema,
+  cashCollectionSchema,
 } = require("../validators/operationalSchemas");
 const { requirePg } = require("../middleware/pgReady");
 const {
@@ -214,6 +215,80 @@ router.get("/leads/:id/notes", requireEmployeeOwnsLead(), asyncRoute(async (req,
   return ok(res, notes);
 }));
 
+router.get("/leads/:id/cash-collections", requireEmployeeOwnsLead(), asyncRoute(async (req, res) => {
+  const items = await repo.listCashCollectionsByLead(tenant(req), req.params.id);
+  const total = await repo.sumCashByLead(tenant(req), req.params.id);
+  return ok(res, items, { total });
+}));
+
+router.post("/leads/:id/cash-collections", upload.single("slip"), requireEmployeeOwnsLead(), asyncRoute(async (req, res) => {
+  const body = {
+    amount: req.body.amount,
+    paymentMode: req.body.paymentMode || req.body.payment_mode,
+    paymentAt: req.body.paymentAt || req.body.payment_at,
+    transactionId: req.body.transactionId || req.body.transaction_id,
+    notes: req.body.notes,
+    employeeId: req.body.employeeId || req.body.employee_id,
+    currency: req.body.currency,
+  };
+
+  const parsed = cashCollectionSchema.safeParse(body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      success: false,
+      message: "Validation failed",
+      errors: parsed.error.flatten(),
+    });
+  }
+
+  const data = parsed.data;
+  const transactionId = (data.transactionId || data.transaction_id || "").trim();
+  const hasSlip = Boolean(req.file);
+  if (!transactionId && !hasSlip) {
+    return res.status(400).json({
+      success: false,
+      message: "Provide a transaction ID or upload a payment slip",
+    });
+  }
+
+  const { lead, assignedId } = await leadAssignedEmployeeId(tenant(req), req.params.id);
+  if (!lead) {
+    return res.status(404).json({ success: false, message: "Lead not found" });
+  }
+
+  const employeeId = data.employeeId || data.employee_id || assignedId || authenticatedEmployeeId(req);
+  const paymentAt = data.paymentAt || data.payment_at || new Date();
+  const slipUrl = req.file ? `/uploads/${req.file.filename}` : null;
+  const slipFilename = req.file ? req.file.originalname : null;
+
+  const record = await repo.insertCashCollection({
+    tenantId: tenant(req),
+    leadId: Number(req.params.id),
+    employeeId: employeeId ? Number(employeeId) : null,
+    amount: data.amount,
+    currency: data.currency || "INR",
+    paymentMode: data.paymentMode || data.payment_mode,
+    paymentAt,
+    transactionId: transactionId || null,
+    slipUrl,
+    slipFilename,
+    notes: data.notes || null,
+    recordedBy: actor(req).actorName || actor(req).actorId,
+  });
+
+  await writeTimeline({
+    tenantId: tenant(req),
+    leadId: req.params.id,
+    type: "payment",
+    summary: `Cash collected: ₹${Number(data.amount).toLocaleString("en-IN")} via ${data.paymentMode || data.payment_mode}`,
+    payload: { amount: data.amount, paymentMode: data.paymentMode || data.payment_mode, transactionId: transactionId || null },
+    actor: actor(req),
+  });
+
+  const total = await repo.sumCashByLead(tenant(req), req.params.id);
+  return ok(res, record, { total });
+}));
+
 router.get("/leads-queue", asyncRoute(async (req, res) => {
   const items = await repo.listQueue(tenant(req), { status: req.query.status });
   return ok(res, items);
@@ -302,6 +377,12 @@ router.delete("/employees/:id", asyncRoute(async (req, res) => {
 router.get("/employees/:id/leads", requireEmployeeSelf("id"), asyncRoute(async (req, res) => {
   const { items } = await repo.listLeads(tenant(req), { assignedTo: req.params.id }, { page: 1, limit: 500 });
   return ok(res, items);
+}));
+
+router.get("/employees/:id/cash-collections", requireEmployeeSelf("id"), asyncRoute(async (req, res) => {
+  const items = await repo.listCashCollectionsByEmployee(tenant(req), req.params.id);
+  const total = await repo.sumCashByEmployee(tenant(req), req.params.id);
+  return ok(res, items, { total });
 }));
 
 router.get("/sops", asyncRoute(async (req, res) => {
