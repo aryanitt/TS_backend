@@ -330,47 +330,55 @@ async function getActivityFromDb(limit = 10) {
   }));
 }
 
+function emptyFilterRange() {
+  return {
+    kpis: [
+      { label: "Revenue", value: "₹0", icon: "DollarSign" },
+      { label: "Cash Collected", value: "₹0", icon: "Users" },
+      { label: "Conversion Rate", value: "0%", icon: "Activity" },
+      { label: "Qualified Leads", value: "0", icon: "FileText" },
+      { label: "Pipeline Value", value: "₹0", icon: "DollarSign" },
+    ],
+    leaderboard: [],
+    metrics: { pickup: 0, qualification: 0, conversion: 0 },
+    insights: [],
+    activity: [],
+  };
+}
+
+function emptyFilterData() {
+  return {
+    today: emptyFilterRange(),
+    week: emptyFilterRange(),
+    month: emptyFilterRange(),
+  };
+}
+
 async function getDashboardBundle(tenantId = TENANT) {
+  const empty = emptyFilterData();
+
   if (!(await dbReady())) {
-    return { source: "mock", filterData: mock.FILTER_DATA, revenueSeries: mock.revenueSeries, aiInsights: mock.aiInsights };
+    return { source: "offline", filterData: empty, revenueSeries: [], aiInsights: [], success: true };
   }
 
   try {
-    const leadCount = await pool.query(
-      `SELECT COUNT(*) AS c FROM leads WHERE tenant_id = $1 AND is_deleted = 0`,
-      [tenantId],
-    );
-    const hasLeads = Number(leadCount.rows[0]?.c) > 0;
-
-    let filterData = mock.FILTER_DATA;
-    let source = "mock";
-
-    if (hasLeads) {
-      const dbFilter = await buildFilterDataFromDb(tenantId);
-      const mergeRange = (rangeKey) => ({
-        ...mock.FILTER_DATA[rangeKey],
-        ...dbFilter[rangeKey],
-        kpis: dbFilter[rangeKey]?.kpis?.length ? dbFilter[rangeKey].kpis : mock.FILTER_DATA[rangeKey].kpis,
-        leaderboard: dbFilter[rangeKey]?.leaderboard?.length
-          ? dbFilter[rangeKey].leaderboard
-          : mock.FILTER_DATA[rangeKey].leaderboard,
-        metrics: dbFilter[rangeKey]?.metrics || mock.FILTER_DATA[rangeKey].metrics,
-        insights: mock.FILTER_DATA[rangeKey].insights,
-      });
-      filterData = {
-        today: mergeRange("today"),
-        week: mergeRange("week"),
-        month: mergeRange("month"),
-      };
-      source = "merged";
-    }
+    const filterData = await buildFilterDataFromDb(tenantId);
 
     const dbInsights = await getAiInsightsFromDb(tenantId, "dashboard");
-    const aiInsights = dbInsights.length ? dbInsights : mock.aiInsights;
+    const aiInsights = dbInsights.length
+      ? dbInsights.map((row) => ({
+          type: row.tone || row.type || "check",
+          title: row.title || "Insight",
+          body: row.body || "",
+          tone: row.tone || row.type || "check",
+        }))
+      : [];
 
-    const activity = await getActivityFromDb(6);
-    if (activity.length && filterData.week) {
-      filterData.week.activity = activity.length >= 2 ? activity : filterData.week.activity;
+    const activity = await getActivityFromDb(8);
+    if (activity.length) {
+      for (const key of ["today", "week", "month"]) {
+        if (filterData[key]) filterData[key].activity = activity;
+      }
     }
 
     const revenueResult = await pool.query(
@@ -382,18 +390,16 @@ async function getDashboardBundle(tenantId = TENANT) {
       [tenantId],
     );
 
-    const revenueSeries = revenueResult.rows.length
-      ? revenueResult.rows.map((r, i) => ({
-          month: r.month,
-          revenue: Math.round(Number(r.revenue) / 10000) || mock.revenueSeries[i]?.revenue || 0,
-          forecast: Math.round((Number(r.revenue) / 10000) * 0.9) || mock.revenueSeries[i]?.forecast || 0,
-        }))
-      : mock.revenueSeries;
+    const revenueSeries = revenueResult.rows.map((r) => ({
+      month: r.month,
+      revenue: Math.round(Number(r.revenue) / 10000) || 0,
+      forecast: Math.round((Number(r.revenue) / 10000) * 0.9) || 0,
+    }));
 
-    return { source, filterData, revenueSeries, aiInsights, success: true };
+    return { source: "database", filterData, revenueSeries, aiInsights, success: true };
   } catch (err) {
     console.error("getDashboardBundle error:", err.message);
-    return { source: "mock", filterData: mock.FILTER_DATA, revenueSeries: mock.revenueSeries, aiInsights: mock.aiInsights, success: true };
+    return { source: "error", filterData: empty, revenueSeries: [], aiInsights: [], success: true };
   }
 }
 
