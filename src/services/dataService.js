@@ -3,6 +3,16 @@ const mock = require("../data/mockFallback");
 
 const TENANT = "default";
 
+const CONVERTED_LEAD_SQL = `
+  LOWER(COALESCE(pipeline_stage, '')) IN ('converted', 'won', 'closed won')
+  OR LOWER(COALESCE(status, '')) IN ('converted', 'won')
+`;
+
+const CONVERTED_LEAD_SQL_ALIASED = `
+  LOWER(COALESCE(l.pipeline_stage, '')) IN ('converted', 'won', 'closed won')
+  OR LOWER(COALESCE(l.status, '')) IN ('converted', 'won')
+`;
+
 function formatINR(amount) {
   const n = Number(amount) || 0;
   if (n >= 10000000) return `₹${(n / 10000000).toFixed(1)}Cr`;
@@ -194,50 +204,28 @@ async function dbReady() {
   }
 }
 
-async function queryLeadsStats(tenantId, rangeKey) {
-  const { start, end } = rangeToDates(rangeKey);
-  const baseResult = await pool.query(
+async function queryLeadsStats(tenantId) {
+  const result = await pool.query(
     `SELECT
       COUNT(*) AS total_leads,
       COALESCE(SUM(expected_revenue), 0) AS pipeline_value,
-      SUM(CASE WHEN pipeline_stage IN ('Qualified','Call Booked','Proposal Sent','Negotiation','Converted') OR status IN ('Qualified','Call Booked','Proposal Sent','Negotiation','Converted') THEN 1 ELSE 0 END) AS qualified
+      SUM(CASE WHEN pipeline_stage IN ('Qualified','Call Booked','Proposal Sent','Negotiation','Converted')
+        OR status IN ('Qualified','Call Booked','Proposal Sent','Negotiation','Converted') THEN 1 ELSE 0 END) AS qualified,
+      SUM(CASE WHEN ${CONVERTED_LEAD_SQL} THEN 1 ELSE 0 END) AS conversions,
+      COALESCE(SUM(CASE WHEN ${CONVERTED_LEAD_SQL} THEN expected_revenue ELSE 0 END), 0) AS revenue
      FROM leads
      WHERE tenant_id = $1 AND is_deleted = 0`,
     [tenantId],
   );
-
-  const params = [tenantId];
-  let periodFilter = "";
-  if (start) {
-    params.push(start);
-    periodFilter += ` AND created_at >= $${params.length}`;
-  }
-  if (end && rangeKey === "today") {
-    params.push(end);
-    periodFilter += ` AND created_at <= $${params.length}`;
-  }
-
-  const periodResult = await pool.query(
-    `SELECT
-      SUM(CASE WHEN pipeline_stage = 'Converted' OR status = 'Converted' THEN 1 ELSE 0 END) AS conversions,
-      COALESCE(SUM(CASE WHEN pipeline_stage = 'Converted' OR status = 'Converted' THEN expected_revenue ELSE 0 END), 0) AS revenue
-     FROM leads
-     WHERE tenant_id = $1 AND is_deleted = 0 ${periodFilter}`,
-    params,
-  );
-
-  return {
-    ...(baseResult.rows[0] || {}),
-    ...(periodResult.rows[0] || {}),
-  };
+  return result.rows[0] || {};
 }
 
 async function queryLeaderboard(tenantId, rangeKey, limit = 3) {
   const result = await pool.query(
     `SELECT e.name, e.id,
       COUNT(l.id) AS leads,
-      SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN 1 ELSE 0 END) AS conv,
-      COALESCE(SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN l.expected_revenue ELSE 0 END), 0) AS rev
+      SUM(CASE WHEN ${CONVERTED_LEAD_SQL_ALIASED} THEN 1 ELSE 0 END) AS conv,
+      COALESCE(SUM(CASE WHEN ${CONVERTED_LEAD_SQL_ALIASED} THEN l.expected_revenue ELSE 0 END), 0) AS rev
      FROM employees e
      LEFT JOIN leads l ON l.assigned_to = e.id AND l.is_deleted = 0 AND l.tenant_id = $1
      WHERE e.tenant_id = $1 AND (LOWER(COALESCE(e.status, 'active')) = 'active')
@@ -274,7 +262,7 @@ async function buildFilterDataFromDb(tenantId) {
   const ranges = ["today", "week", "month"];
   const filterData = {};
   for (const range of ranges) {
-    const stats = await queryLeadsStats(tenantId, range);
+    const stats = await queryLeadsStats(tenantId);
     const total = Number(stats.total_leads) || 0;
     const qualified = Number(stats.qualified) || 0;
     const conversions = Number(stats.conversions) || 0;
