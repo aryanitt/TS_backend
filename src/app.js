@@ -57,7 +57,6 @@ app.get("/health", (req, res) => {
     ok: true,
     service: "ts-publications-crm-api",
     auth: true,
-    authSeed: "/api/auth/seed-status",
     database: isPgReady() ? "connected" : "disconnected",
     timestamp: new Date().toISOString(),
   });
@@ -68,7 +67,6 @@ app.get("/", (req, res) => {
     message: "Backend is running successfully",
     auth: true,
     authLogin: "/api/auth/login",
-    authSeed: "/api/auth/seed-status",
     health: "/health",
     operationalApi: "/api/v1",
     n8nWebhook: "/api/v1/webhooks/n8n",

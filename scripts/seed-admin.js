@@ -7,11 +7,13 @@ require("dotenv").config({ quiet: true });
 
 async function main() {
   const { ensureAdminUser } = require("../src/services/userService");
-  await ensureAdminUser();
-  console.log("Admin user ready.");
-  console.log("Login ID:", process.env.ADMIN_LOGIN_ID || "ADMIN");
-  console.log("Email:", (process.env.ADMIN_EMAIL || "admin@tspublication.in").toLowerCase());
-  console.log("Password:", process.env.ADMIN_PASSWORD || "Admin@12345");
+  const result = await ensureAdminUser();
+  console.log(result?.created ? "Admin user created." : "Admin user already exists — nothing changed.");
+  console.log("Login ID:", result?.loginId || process.env.ADMIN_LOGIN_ID || "ADMIN");
+  console.log("Email:", result?.email || (process.env.ADMIN_EMAIL || "admin@tspublication.in").toLowerCase());
+  if (result?.created && result?.tempPassword) {
+    console.log("One-time password (change immediately after login):", result.tempPassword);
+  }
   process.exit(0);
 }
 
