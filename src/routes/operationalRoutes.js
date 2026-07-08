@@ -704,7 +704,7 @@ router.post("/webhooks/callyzer", asyncRoute(async (req, res) => {
     }
   }
 
-  return res.status(202).json({ success: true, synced, skipped });
+  return res.status(200).json({ success: true, synced, skipped });
 }));
 
 router.get("/callyzer/status", asyncRoute(async (req, res) => {
