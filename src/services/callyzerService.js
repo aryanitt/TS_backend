@@ -93,7 +93,7 @@ function employeeEmpNumbers(employee) {
   const phone = employee.phone;
 
   if (callyser) {
-    const raw = String(callyser).trim();
+    const raw = String(callyser).trim().replace(/^\+/, "");
     if (raw.includes("-")) {
       numbers.add(raw);
     } else {
@@ -358,6 +358,137 @@ async function fetchCallHistory({ empNumbers, days = 30, pageSize = 100 }) {
   return allLogs;
 }
 
+const statsCache = new Map();
+
+function formatDurationHms(seconds) {
+  const total = Number(seconds) || 0;
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${h}h ${m}m ${s}s`;
+}
+
+function getPeriodRange(period) {
+  const now = new Date();
+  const callTo = Math.floor(now.getTime() / 1000);
+  let callFrom;
+
+  if (period === "week") {
+    callFrom = callTo - 7 * 86400;
+  } else if (period === "month") {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    callFrom = Math.floor(start.getTime() / 1000);
+  } else {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    callFrom = Math.floor(start.getTime() / 1000);
+  }
+
+  return { callFrom, callTo, period: period || "today" };
+}
+
+function mapEmployeeSummaryRow(row) {
+  if (!row || typeof row !== "object") return null;
+  return {
+    empName: row.emp_name || null,
+    empCode: row.emp_code || null,
+    empNumber: row.emp_number || null,
+    empCountryCode: row.emp_country_code || null,
+    totalCalls: Number(row.total_calls) || 0,
+    totalDurationSec: Number(row.total_duration) || 0,
+    totalDuration: formatDurationHms(row.total_duration),
+    incomingCalls: Number(row.total_incoming_calls) || 0,
+    incomingDurationSec: Number(row.total_incoming_duration) || 0,
+    incomingDuration: formatDurationHms(row.total_incoming_duration),
+    outgoingCalls: Number(row.total_outgoing_calls) || 0,
+    outgoingDurationSec: Number(row.total_outgoing_duration) || 0,
+    outgoingDuration: formatDurationHms(row.total_outgoing_duration),
+    missedCalls: Number(row.total_missed_calls) || 0,
+    rejectedCalls: Number(row.total_rejected_calls) || 0,
+    neverAttended: Number(row.total_never_attended_calls) || 0,
+    notPickupByClient: Number(row.total_not_pickup_by_clients_calls) || 0,
+    uniqueClients: Number(row.total_unique_clients) || 0,
+    connectedCalls: Number(row.total_connected_calls) || 0,
+    workingHours: row.total_working_hours || "00:00:00",
+    lastCallLog: row.last_call_log || null,
+  };
+}
+
+function extractEmployeeSummaryRows(response) {
+  if (!response?.result) return [];
+  if (Array.isArray(response.result)) return response.result;
+  if (Array.isArray(response.result.employees)) return response.result.employees;
+  if (typeof response.result === "object") return [response.result];
+  return [];
+}
+
+async function fetchEmployeeSummary({ empNumbers, period = "today" }) {
+  if (!empNumbers?.length) return null;
+
+  const range = getPeriodRange(period);
+  const cacheKey = `stats:${empNumbers.sort().join(",")}:${range.period}:${range.callFrom}`;
+  const cached = statsCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < 120000) {
+    return cached.stats;
+  }
+
+  const response = await callyzerPost("/call-log/employee-summary", {
+    call_from: range.callFrom,
+    call_to: range.callTo,
+    emp_numbers: empNumbers,
+    page_no: 1,
+    page_size: 1,
+  });
+
+  const rows = extractEmployeeSummaryRows(response);
+  const stats = mapEmployeeSummaryRow(rows[0]);
+  statsCache.set(cacheKey, { at: Date.now(), stats });
+  return stats;
+}
+
+async function fetchTeamSummary(period = "today") {
+  const range = getPeriodRange(period);
+  const cacheKey = `team-stats:${range.period}:${range.callFrom}`;
+  const cached = statsCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < 120000) {
+    return cached.stats;
+  }
+
+  const response = await callyzerPost("/call-log/employee-summary", {
+    call_from: range.callFrom,
+    call_to: range.callTo,
+    page_no: 1,
+    page_size: 100,
+  });
+
+  const stats = extractEmployeeSummaryRows(response).map(mapEmployeeSummaryRow).filter(Boolean);
+  statsCache.set(cacheKey, { at: Date.now(), stats });
+  return stats;
+}
+
+async function getStatsForEmployee(employee, period = "today") {
+  if (!isConfigured() || !employee) {
+    return { configured: false, stats: null, message: "Callyzer not configured" };
+  }
+
+  const empNumbers = employeeEmpNumbers(employee);
+  if (!empNumbers.length) {
+    return {
+      configured: true,
+      stats: null,
+      message: "Set Callyser ID in Team (e.g. 91-9462265230 from Callyzer employee list)",
+    };
+  }
+
+  try {
+    const stats = await fetchEmployeeSummary({ empNumbers, period });
+    return { configured: true, stats, period: getPeriodRange(period).period };
+  } catch (err) {
+    logger.error("Callyzer stats fetch failed", { employeeId: employee.id, message: err.message });
+    return { configured: true, stats: null, message: err.message };
+  }
+}
+
 async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [], days = 30 } = {}) {
   if (!isConfigured() || !employee) return dbCalls;
 
@@ -426,6 +557,11 @@ module.exports = {
   captureLeadForEmployee,
   prepareLeadCall,
   fetchCallHistory,
+  fetchEmployeeSummary,
+  fetchTeamSummary,
+  getStatsForEmployee,
+  getPeriodRange,
+  mapEmployeeSummaryRow,
   getCallsForEmployee,
   verifyWebhookSecret,
 };

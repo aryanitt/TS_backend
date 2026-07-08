@@ -539,6 +539,17 @@ router.get("/employee/:employeeId/calls", requireEmployeeSelf(), asyncRoute(asyn
   return ok(res, calls);
 }));
 
+router.get("/employee/:employeeId/callyzer/stats", requireEmployeeSelf(), asyncRoute(async (req, res) => {
+  const tenantId = tenant(req);
+  const employee = await repo.findEmployeeById(tenantId, req.params.employeeId);
+  if (!employee) {
+    return res.status(404).json({ success: false, message: "Employee not found" });
+  }
+  const period = String(req.query.period || "today").toLowerCase();
+  const payload = await callyzer.getStatsForEmployee(employee, period);
+  return ok(res, payload);
+}));
+
 router.post("/employee/followups", validate(followupSchema), requireEmployeeSelfBody("employeeId"), requireEmployeeOwnsLeadBody("leadId"), asyncRoute(async (req, res) => {
   const followup = await scheduleFollowup({ tenantId: tenant(req), data: req.body, actor: actor(req) });
   return ok(res, followup);
@@ -715,6 +726,22 @@ router.get("/callyzer/status", asyncRoute(async (req, res) => {
     configured: callyzer.isConfigured(),
     webhookUrl: "/api/v1/webhooks/callyzer",
   });
+}));
+
+router.get("/callyzer/team-stats", asyncRoute(async (req, res) => {
+  if (!isAdminUser(req)) {
+    return res.status(403).json({ success: false, message: "Admin access required" });
+  }
+  if (!callyzer.isConfigured()) {
+    return ok(res, { configured: false, stats: [], message: "Callyzer API key not configured" });
+  }
+  const period = String(req.query.period || "today").toLowerCase();
+  try {
+    const stats = await callyzer.fetchTeamSummary(period);
+    return ok(res, { configured: true, period, stats });
+  } catch (err) {
+    return res.status(502).json({ success: false, message: err.message || "Could not fetch Callyzer team stats" });
+  }
 }));
 
 router.post("/webhooks/forms/:formId/submit", validate(createLeadSchema), asyncRoute(async (req, res) => {
