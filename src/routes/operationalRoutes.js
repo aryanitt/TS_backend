@@ -47,6 +47,7 @@ const {
   getPipelineGrouped,
   writeTimeline,
 } = require("../services/operationalServices");
+const callyzer = require("../services/callyzerService");
 
 const router = express.Router();
 const uploadDir = path.join(process.cwd(), "uploads");
@@ -391,7 +392,7 @@ router.get("/sops", asyncRoute(async (req, res) => {
 }));
 
 async function loadEmployeeDashboard(tenantId, employeeId) {
-  const [employee, leadsResult, tasks, followups, calls, meetings, sops] = await Promise.all([
+  const [employee, leadsResult, tasks, followups, dbCalls, meetings, sops] = await Promise.all([
     repo.findEmployeeById(tenantId, employeeId),
     repo.listLeads(tenantId, { assignedTo: employeeId }, { page: 1, limit: 500 }),
     repo.listTasks(tenantId, { assigneeId: employeeId, limit: 20 }),
@@ -400,6 +401,11 @@ async function loadEmployeeDashboard(tenantId, employeeId) {
     repo.listMeetings(tenantId, employeeId),
     listAllSops().catch(() => []),
   ]);
+  const calls = await callyzer.getCallsForEmployee(tenantId, employee, {
+    dbCalls,
+    leads: leadsResult.items,
+    days: Number(process.env.CALLYZER_HISTORY_DAYS || 30),
+  });
   return {
     employee,
     leads: leadsResult.items,
@@ -408,6 +414,9 @@ async function loadEmployeeDashboard(tenantId, employeeId) {
     calls: calls.slice(0, 200),
     meetings,
     sops,
+    integrations: {
+      callyzer: callyzer.isConfigured(),
+    },
   };
 }
 
@@ -483,7 +492,18 @@ router.post("/employee/calls", validate(callSchema), requireEmployeeSelfBody("em
 }));
 
 router.get("/employee/:employeeId/calls", requireEmployeeSelf(), asyncRoute(async (req, res) => {
-  const calls = await repo.listCalls(tenant(req), req.params.employeeId);
+  const tenantId = tenant(req);
+  const employeeId = req.params.employeeId;
+  const [employee, dbCalls, leadsResult] = await Promise.all([
+    repo.findEmployeeById(tenantId, employeeId),
+    repo.listCalls(tenantId, employeeId),
+    repo.listLeads(tenantId, { assignedTo: employeeId }, { page: 1, limit: 500 }),
+  ]);
+  const calls = await callyzer.getCallsForEmployee(tenantId, employee, {
+    dbCalls,
+    leads: leadsResult.items,
+    days: Number(req.query.days || process.env.CALLYZER_HISTORY_DAYS || 30),
+  });
   return ok(res, calls);
 }));
 
@@ -594,6 +614,70 @@ router.post("/webhooks/n8n", validate(createLeadSchema), asyncRoute(async (req, 
     { tenantId: tenant(req), actor: { actorId: "webhook:n8n", actorName: "n8n Webhook", actorRole: "integration" } },
   );
   return res.status(202).json({ success: true, leadId: result.lead.id, queueId: result.queueItem.id });
+}));
+
+router.post("/webhooks/callyzer", asyncRoute(async (req, res) => {
+  if (!callyzer.verifyWebhookSecret(req)) {
+    return res.status(401).json({ success: false, message: "Invalid webhook secret" });
+  }
+
+  const tenantId = process.env.CALLYZER_TENANT_ID || "default";
+  const payloads = Array.isArray(req.body) ? req.body : [req.body];
+  const employees = await repo.listEmployees(tenantId);
+  let synced = 0;
+  let skipped = 0;
+
+  for (const block of payloads) {
+    const employee = employees.find((emp) => callyzer.employeeMatchesWebhook(emp, block));
+    if (!employee) {
+      skipped += Array.isArray(block.call_logs) ? block.call_logs.length : 0;
+      continue;
+    }
+
+    const { items: leads } = await repo.listLeads(
+      tenantId,
+      { assignedTo: employee.id },
+      { page: 1, limit: 500 },
+    );
+
+    const logs = Array.isArray(block.call_logs) ? block.call_logs : [];
+    for (const log of logs) {
+      if (!log?.id) continue;
+      const lead = callyzer.findLeadForClient(leads, log.client_country_code, log.client_number);
+      const mapped = callyzer.mapLogToCall(log, employee.id, lead?.id);
+      try {
+        await repo.upsertCallyzerCall({
+          tenantId,
+          leadId: mapped.leadId,
+          employeeId: employee.id,
+          callyzerCallId: mapped.callyzerCallId,
+          direction: mapped.direction,
+          outcome: mapped.outcome,
+          durationSec: mapped.durationSec,
+          startedAt: mapped.startedAt,
+          endedAt: mapped.endedAt,
+          recordingUrl: mapped.recordingUrl,
+          notes: mapped.notes,
+          aiSummary: mapped.aiSummary,
+        });
+        synced += 1;
+      } catch {
+        skipped += 1;
+      }
+    }
+  }
+
+  return res.status(202).json({ success: true, synced, skipped });
+}));
+
+router.get("/callyzer/status", asyncRoute(async (req, res) => {
+  if (!isAdminUser(req)) {
+    return res.status(403).json({ success: false, message: "Admin access required" });
+  }
+  return ok(res, {
+    configured: callyzer.isConfigured(),
+    webhookUrl: "/api/v1/webhooks/callyzer",
+  });
 }));
 
 router.post("/webhooks/forms/:formId/submit", validate(createLeadSchema), asyncRoute(async (req, res) => {

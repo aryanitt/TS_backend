@@ -81,6 +81,8 @@ function mapEmployee(row) {
     managerId: row.manager_id,
     territory: row.territory,
     city: row.city,
+    callyserId: row.callyser_id || null,
+    empCode: row.emp_id || null,
     capacity: {
       maxActiveLeads: row.max_active_leads ?? 40,
       currentActiveLeads: row.current_active_leads ?? 0,
@@ -185,6 +187,7 @@ function mapCall(row) {
     tenantId: row.tenant_id,
     leadId: row.lead_id,
     employeeId: row.employee_id,
+    callyzerCallId: row.callyzer_call_id || null,
     direction: row.direction,
     outcome: row.outcome,
     durationSec: row.duration_sec,
@@ -985,6 +988,43 @@ async function listCalls(tenantId, employeeId) {
   return result.rows.map(mapCall);
 }
 
+async function findCallByCallyzerId(tenantId, callyzerCallId) {
+  const result = await pool.query(
+    `SELECT * FROM employee_calls WHERE tenant_id = $1 AND callyzer_call_id = $2 LIMIT 1`,
+    [tenantId, callyzerCallId],
+  );
+  return mapCall(result.rows[0]);
+}
+
+async function upsertCallyzerCall(data) {
+  const existing = data.callyzerCallId
+    ? await findCallByCallyzerId(data.tenantId, data.callyzerCallId)
+    : null;
+  if (existing) return existing;
+
+  const result = await pool.query(
+    `INSERT INTO employee_calls (
+       tenant_id, lead_id, employee_id, callyzer_call_id, direction, outcome,
+       duration_sec, started_at, ended_at, recording_url, notes, ai_summary
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    [
+      data.tenantId,
+      data.leadId || null,
+      data.employeeId,
+      data.callyzerCallId || null,
+      data.direction || "outbound",
+      data.outcome || null,
+      data.durationSec || null,
+      data.startedAt || null,
+      data.endedAt || null,
+      data.recordingUrl || null,
+      data.notes || null,
+      data.aiSummary || null,
+    ],
+  );
+  return mapCall(result.rows[0]);
+}
+
 async function insertTask(data) {
   const result = await pool.query(
     `INSERT INTO tasks (tenant_id, assignee_id, lead_id, title, description, priority, due_at, status)
@@ -1430,6 +1470,8 @@ module.exports = {
   listNotes,
   insertCall,
   listCalls,
+  findCallByCallyzerId,
+  upsertCallyzerCall,
   insertTask,
   findTaskById,
   updateTask,

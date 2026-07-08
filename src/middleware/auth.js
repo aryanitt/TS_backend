@@ -3,6 +3,7 @@ const { findUserById, serializeUser } = require("../services/userService");
 
 const PUBLIC_API_PREFIXES = [
   "/api/auth/login",
+  "/api/v1/webhooks/callyzer",
 ];
 
 function isPublicApiPath(path) {

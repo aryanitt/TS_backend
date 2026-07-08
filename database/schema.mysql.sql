@@ -244,8 +244,9 @@ CREATE TABLE IF NOT EXISTS lead_notes (
 CREATE TABLE IF NOT EXISTS employee_calls (
   id INT AUTO_INCREMENT PRIMARY KEY,
   tenant_id VARCHAR(50) DEFAULT 'default',
-  lead_id INT NOT NULL,
+  lead_id INT NULL,
   employee_id INT NOT NULL,
+  callyzer_call_id VARCHAR(100) NULL,
   direction VARCHAR(20) DEFAULT 'outbound',
   outcome VARCHAR(100),
   duration_sec INT,

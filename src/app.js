@@ -70,6 +70,7 @@ app.get("/", (req, res) => {
     health: "/health",
     operationalApi: "/api/v1",
     n8nWebhook: "/api/v1/webhooks/n8n",
+    callyzerWebhook: "/api/v1/webhooks/callyzer",
     docs: "/api/docs",
     database: isPgReady() ? "connected" : "disconnected",
   });
