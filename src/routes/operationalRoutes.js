@@ -491,6 +491,38 @@ router.post("/employee/calls", validate(callSchema), requireEmployeeSelfBody("em
   return ok(res, call);
 }));
 
+router.post("/employee/callyzer/start-call", requireEmployeeSelfBody("employeeId"), requireEmployeeOwnsLeadBody("leadId"), asyncRoute(async (req, res) => {
+  const tenantId = tenant(req);
+  const [lead, employee] = await Promise.all([
+    repo.findLeadById(tenantId, req.body.leadId),
+    repo.findEmployeeById(tenantId, req.body.employeeId),
+  ]);
+  if (!lead) {
+    return res.status(404).json({ success: false, message: "Lead not found" });
+  }
+  if (!employee) {
+    return res.status(404).json({ success: false, message: "Employee not found" });
+  }
+  if (!lead.phone) {
+    return res.status(400).json({ success: false, message: "Lead phone number is required before calling" });
+  }
+
+  const session = await callyzer.prepareLeadCall({ lead, employee });
+  const sourceMeta = {
+    ...(lead.sourceMeta || {}),
+    callyzerLeadId: session.callyzerLeadId || lead.sourceMeta?.callyzerLeadId || null,
+    lastCallyzerDialAt: session.startedAt,
+    lastCallyzerDialBy: employee.id,
+  };
+  await repo.updateLead(tenantId, lead.id, { sourceMeta });
+
+  return ok(res, {
+    ...session,
+    leadName: lead.leadName,
+    message: "Lead synced to Callyzer. Place the call from your phone — Callyzer will record it under this lead.",
+  });
+}));
+
 router.get("/employee/:employeeId/calls", requireEmployeeSelf(), asyncRoute(async (req, res) => {
   const tenantId = tenant(req);
   const employeeId = req.params.employeeId;
@@ -634,17 +666,22 @@ router.post("/webhooks/callyzer", asyncRoute(async (req, res) => {
       continue;
     }
 
-    const { items: leads } = await repo.listLeads(
+    const { items: assignedLeads } = await repo.listLeads(
       tenantId,
       { assignedTo: employee.id },
       { page: 1, limit: 500 },
     );
+    const phoneIndex = callyzer.buildLeadPhoneIndex(assignedLeads);
 
     const logs = Array.isArray(block.call_logs) ? block.call_logs : [];
     for (const log of logs) {
       if (!log?.id) continue;
-      const lead = callyzer.findLeadForClient(leads, log.client_country_code, log.client_number);
-      const mapped = callyzer.mapLogToCall(log, employee.id, lead?.id);
+      let lead = callyzer.findLeadForClient(assignedLeads, log.client_country_code, log.client_number);
+      if (!lead) {
+        lead = await repo.findLeadByPhone(tenantId, log.client_number, { assignedTo: employee.id });
+      }
+      const leadId = lead?.id || callyzer.resolveLeadIdForLog(log, assignedLeads, phoneIndex);
+      const mapped = callyzer.mapLogToCall(log, employee.id, leadId);
       try {
         await repo.upsertCallyzerCall({
           tenantId,

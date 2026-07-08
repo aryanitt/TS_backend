@@ -378,6 +378,23 @@ async function findLeadById(tenantId, leadId, { populate = false } = {}) {
   return populate ? mapLead(row, joinEmployee(row)) : mapLead(row);
 }
 
+async function findLeadByPhone(tenantId, phone, { assignedTo } = {}) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  const last10 = digits.slice(-10);
+  if (!last10 || last10.length < 10) return null;
+
+  const params = [tenantId, `%${last10}`];
+  let sql = `SELECT * FROM leads WHERE tenant_id = $1 AND is_deleted = 0 AND phone LIKE $2`;
+  if (assignedTo != null) {
+    sql += ` AND assigned_to = $3`;
+    params.push(assignedTo);
+  }
+  sql += ` ORDER BY id DESC LIMIT 1`;
+
+  const result = await pool.query(sql, params);
+  return mapLead(result.rows[0]);
+}
+
 async function listLeads(tenantId, filters = {}, { page = 1, limit = 50 } = {}) {
   const conditions = ["l.tenant_id = $1", "l.is_deleted = 0"];
   const params = [tenantId];
@@ -1437,6 +1454,7 @@ module.exports = {
   ping,
   insertLead,
   findLeadById,
+  findLeadByPhone,
   listLeads,
   updateLead,
   softDeleteLead,

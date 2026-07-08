@@ -172,6 +172,126 @@ function mapLogToCall(log, employeeId, leadId) {
   };
 }
 
+function formatLeadContactNumber(phone) {
+  const d = digitsOnly(phone);
+  if (!d) return null;
+  if (d.length === 10) return `91-${d}`;
+  if (d.length > 10) return `${d.slice(0, d.length - 10)}-${d.slice(-10)}`;
+  return null;
+}
+
+function buildDialUrl(phone) {
+  const d = digitsOnly(phone);
+  if (!d) return null;
+  return `tel:+${d}`;
+}
+
+function safeLeadFirstName(name) {
+  const raw = String(name || "Lead").trim();
+  if (raw.length >= 3) return raw.slice(0, 250);
+  return `${raw} CRM`.slice(0, 250);
+}
+
+async function captureLeadForEmployee(lead, employee) {
+  const contactNumber = formatLeadContactNumber(lead.phone || lead.clientPhone);
+  if (!contactNumber) {
+    const err = new Error("Lead phone number is required to start a Callyzer call");
+    err.status = 400;
+    throw err;
+  }
+
+  const empNumbers = employeeEmpNumbers(employee);
+  if (!empNumbers.length) {
+    const err = new Error("Employee Callyzer ID or phone is not configured in Team settings");
+    err.status = 400;
+    throw err;
+  }
+
+  const response = await callyzerPost("/lead/capture", {
+    first_name: safeLeadFirstName(lead.leadName || lead.name),
+    last_name: (lead.companyName || lead.company || "").trim() || undefined,
+    contact_numbers: [contactNumber],
+    assignment: {
+      strategy: "Random",
+      emp_numbers: empNumbers,
+    },
+    existing_lead: {
+      lead_details: "UpdateBlankOnly",
+      assignee: "Overwrite",
+      lead_tags: "Ignore",
+      is_map_existing_call_logs: true,
+    },
+  });
+
+  const saved = response.result?.savedLeads?.[0];
+  return saved?.id || null;
+}
+
+async function prepareLeadCall({ lead, employee }) {
+  if (!isConfigured()) {
+    const err = new Error("Callyzer is not configured on the server");
+    err.status = 503;
+    throw err;
+  }
+
+  let callyzerLeadId = lead.sourceMeta?.callyzerLeadId || null;
+  try {
+    const capturedId = await captureLeadForEmployee(lead, employee);
+    if (capturedId) callyzerLeadId = capturedId;
+  } catch (err) {
+    logger.warn("Callyzer lead capture failed; continuing with dial only", {
+      leadId: lead.id,
+      message: err.message,
+    });
+  }
+
+  return {
+    leadId: lead.id,
+    callyzerLeadId,
+    dialUrl: buildDialUrl(lead.phone),
+    contactNumber: formatLeadContactNumber(lead.phone),
+    startedAt: new Date().toISOString(),
+  };
+}
+
+function resolveLeadIdForLog(log, leads, leadPhoneIndex) {
+  if (log.lead_id && Array.isArray(leads)) {
+    const byCallyzer = leads.find((l) => {
+      const meta = l.sourceMeta || l.source_meta || {};
+      return meta.callyzerLeadId === log.lead_id;
+    });
+    if (byCallyzer) return byCallyzer.id;
+  }
+
+  const byPhone = findLeadForClient(leads, log.client_country_code, log.client_number);
+  if (byPhone) return byPhone.id;
+
+  if (leadPhoneIndex && log.client_number) {
+    const client = normalizePhone(log.client_country_code, log.client_number);
+    return leadPhoneIndex.get(client.last10) || null;
+  }
+
+  return null;
+}
+
+function buildLeadPhoneIndex(leads) {
+  const index = new Map();
+  if (!Array.isArray(leads)) return index;
+  for (const lead of leads) {
+    const d = digitsOnly(lead.phone);
+    if (d.length >= 10) index.set(d.slice(-10), lead.id);
+  }
+  return index;
+}
+
+function attachLeadToCall(call, leads, phoneIndex) {
+  if (call.leadId) return call;
+  const leadId = findLeadForClient(leads, null, call.clientPhone)?.id
+    || (call.clientPhone && phoneIndex?.get(digitsOnly(call.clientPhone).slice(-10)));
+  if (!leadId) return call;
+  return { ...call, leadId };
+}
+
 function findLeadForClient(leads, clientCountryCode, clientNumber) {
   if (!Array.isArray(leads) || !clientNumber) return null;
   const client = normalizePhone(clientCountryCode, clientNumber);
@@ -253,14 +373,15 @@ async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [
       dbCalls.map((c) => c.callyzerCallId).filter(Boolean),
     );
 
+    const phoneIndex = buildLeadPhoneIndex(leads);
     const callyzerCalls = logs
       .filter((log) => log?.id && !dbCallyzerIds.has(log.id))
       .map((log) => {
-        const lead = findLeadForClient(leads, log.client_country_code, log.client_number);
-        return mapLogToCall(log, employee.id, lead?.id);
+        const leadId = resolveLeadIdForLog(log, leads, phoneIndex);
+        return mapLogToCall(log, employee.id, leadId);
       });
 
-    const merged = [...dbCalls, ...callyzerCalls];
+    const merged = [...dbCalls, ...callyzerCalls].map((c) => attachLeadToCall(c, leads, phoneIndex));
     merged.sort((a, b) => {
       const ta = new Date(a.startedAt || a.createdAt || 0).getTime();
       const tb = new Date(b.startedAt || b.createdAt || 0).getTime();
@@ -294,9 +415,16 @@ module.exports = {
   employeeEmpNumbers,
   normalizePhone,
   phonesMatch,
+  formatLeadContactNumber,
+  buildDialUrl,
   mapLogToCall,
   findLeadForClient,
+  resolveLeadIdForLog,
+  buildLeadPhoneIndex,
+  attachLeadToCall,
   employeeMatchesWebhook,
+  captureLeadForEmployee,
+  prepareLeadCall,
   fetchCallHistory,
   getCallsForEmployee,
   verifyWebhookSecret,
