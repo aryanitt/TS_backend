@@ -72,8 +72,21 @@ function normalizeLeadText(value) {
 }
 
 function mapLeadToPipelineColumn(row) {
+  const stage = String(row.pipeline_stage || "").toLowerCase().trim();
+  const status = String(row.status || "").toLowerCase().trim();
+
+  if (
+    stage === "new" ||
+    stage === "new lead" ||
+    stage === "not_interested" ||
+    stage === "not interested" ||
+    status === "not interested" ||
+    status === "not_interested"
+  ) {
+    return null;
+  }
+
   const pipeline = mapStageToPipeline(row.pipeline_stage || row.status);
-  const status = normalizeLeadText(row.status);
 
   if (pipeline === "closed_won" || ["converted", "won", "closed"].includes(status)) {
     return "Conversion";
@@ -115,6 +128,7 @@ function buildPipelineStatusGrid(rows) {
 
   rows.forEach((row) => {
     const col = mapLeadToPipelineColumn(row);
+    if (!col) return;
     const temp = mapLeadToTemperature(row);
     grid[temp][col] += 1;
   });
@@ -129,7 +143,7 @@ function buildPipelineStatusGrid(rows) {
     tempTotals[t] = stages.reduce((acc, s) => acc + grid[t][s], 0);
   });
 
-  const totalLeads = rows.length;
+  const totalLeads = Object.values(tempTotals).reduce((a, b) => a + b, 0);
   const conversions = stageTotals.Conversion || 0;
   const overallConv = totalLeads > 0 ? Math.round((conversions / totalLeads) * 100) : 0;
 
@@ -189,7 +203,34 @@ async function getPipelineStatusGrid(tenantId = TENANT, options = {}) {
   const emptyGrid = buildPipelineStatusGrid([]);
 
   if (!(await dbReady())) {
-    return { success: true, source: "mock", ...emptyGrid };
+    const empLower = String(employee || "").toLowerCase();
+    if (empLower.includes("aryan")) {
+      return { success: true, source: "mock", ...emptyGrid };
+    }
+    if (empLower.includes("ritik")) {
+      const ritikGrid = buildPipelineStatusGrid([
+        { pipeline_stage: "Attempted", status: "Attempted", temperature: "Warm Lead", form_name: "AI Automation Suite" }
+      ]);
+      return { success: true, source: "mock", ...ritikGrid };
+    }
+    const allMockLeads = [
+      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Hot Lead", form_name: "AI Automation Suite" },
+      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Hot Lead", form_name: "AI Automation Suite" },
+      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Warm Lead", form_name: "Lead Gen Engine" },
+      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Warm Lead", form_name: "Lead Gen Engine" },
+      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Cold Lead", form_name: "Custom Software Dev" },
+      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Cold Lead", form_name: "Custom Software Dev" },
+      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Cold Lead", form_name: "Custom Software Dev" },
+      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Cold Lead", form_name: "Custom Software Dev" },
+      { pipeline_stage: "Call Booked", status: "Call Booked", temperature: "Warm Lead", form_name: "Strategic Consulting" },
+      { pipeline_stage: "Call Booked", status: "Call Booked", temperature: "Warm Lead", form_name: "Strategic Consulting" },
+      { pipeline_stage: "Call Booked", status: "Call Booked", temperature: "Cold Lead", form_name: "Strategic Consulting" },
+      { pipeline_stage: "Proposal Sent", status: "Proposal Sent", temperature: "Warm Lead", form_name: "CRM Setup & Onboarding" },
+      { pipeline_stage: "Converted", status: "Converted", temperature: "Warm Lead", form_name: "CRM Setup & Onboarding" },
+      { pipeline_stage: "Converted", status: "Converted", temperature: "Warm Lead", form_name: "CRM Setup & Onboarding" }
+    ];
+    const allGrid = buildPipelineStatusGrid(allMockLeads);
+    return { success: true, source: "mock", ...allGrid };
   }
 
   try {
@@ -911,6 +952,68 @@ async function getIncentivesData(tenantId = TENANT, month) {
 async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
   const { employee = "All Employees", service = "All Services" } = options;
 
+  if (!(await dbReady())) {
+    const empLower = String(employee || "").toLowerCase();
+    if (empLower.includes("aryan")) {
+      return {
+        success: true,
+        source: "mock",
+        kpiData: [
+          { label: "Leads Assigned", value: "0" },
+          { label: "Calls Done", value: "0" },
+          { label: "Qualified Leads", value: "0" },
+          { label: "Meetings Done", value: "0" },
+          { label: "Proposal Sent", value: "0" },
+          { label: "Revenue", value: "₹0" }
+        ],
+        oppData: { notContacted: 0, unqualified: 0, noMeeting: 0, stuckNegotiation: 0 },
+        metrics: [
+          { label: "Pickup Rate", shortLabel: "Pickup", value: 0, rgb: "124,58,237", desc: "Calls answered vs dialed", trend: "0% vs last week" },
+          { label: "Qualification Rate", shortLabel: "Qualify", value: 0, rgb: "220,38,120", desc: "Qualified vs total contacts", trend: "0% vs last week" },
+          { label: "Conversion Rate", shortLabel: "Convert", value: 0, rgb: "16,185,129", desc: "Closed deals vs qualified", trend: "0% vs last week" }
+        ]
+      };
+    }
+    if (empLower.includes("ritik")) {
+      return {
+        success: true,
+        source: "mock",
+        kpiData: [
+          { label: "Leads Assigned", value: "1" },
+          { label: "Calls Done", value: "13" },
+          { label: "Qualified Leads", value: "0" },
+          { label: "Meetings Done", value: "0" },
+          { label: "Proposal Sent", value: "0" },
+          { label: "Revenue", value: "₹0" }
+        ],
+        oppData: { notContacted: 1, unqualified: 0, noMeeting: 0, stuckNegotiation: 0 },
+        metrics: [
+          { label: "Pickup Rate", shortLabel: "Pickup", value: 0, rgb: "124,58,237", desc: "Calls answered vs dialed", trend: "0% vs last week" },
+          { label: "Qualification Rate", shortLabel: "Qualify", value: 0, rgb: "220,38,120", desc: "Qualified vs total contacts", trend: "0% vs last week" },
+          { label: "Conversion Rate", shortLabel: "Convert", value: 0, rgb: "16,185,129", desc: "Closed deals vs qualified", trend: "0% vs last week" }
+        ]
+      };
+    }
+    return {
+      success: true,
+      source: "mock",
+      kpiData: [
+        { label: "Leads Assigned", value: "14" },
+        { label: "Calls Done", value: "30" },
+        { label: "Qualified Leads", value: "5" },
+        { label: "Meetings Done", value: "0" },
+        { label: "Proposal Sent", value: "1" },
+        { label: "Revenue", value: "₹20.0L" }
+      ],
+      oppData: { notContacted: 3, unqualified: 0, noMeeting: 0, stuckNegotiation: 0 },
+      metrics: [
+        { label: "Pickup Rate", shortLabel: "Pickup", value: 78, rgb: "124,58,237", desc: "Calls answered vs dialed", trend: "+6% vs last week" },
+        { label: "Qualification Rate", shortLabel: "Qualify", value: 42, rgb: "220,38,120", desc: "Qualified vs total contacts", trend: "+3% vs last week" },
+        { label: "Conversion Rate", shortLabel: "Convert", value: 23, rgb: "16,185,129", desc: "Closed deals vs qualified", trend: "+1.2% vs last week" }
+      ]
+    };
+  }
+
   let leadsParams = [tenantId];
   let leadsWhere = "l.tenant_id = $1 AND l.is_deleted = 0";
   
@@ -986,9 +1089,9 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
       stuckNegotiation: Number(row.stuck_negotiation || 0)
     },
     metrics: [
-      { label: "Pickup Rate", shortLabel: "Pickup", value: pickupRate || 78, rgb: "124,58,237", desc: "Calls answered vs dialed", trend: "+6% vs last week" },
-      { label: "Qualification Rate", shortLabel: "Qualify", value: qualRate || 42, rgb: "220,38,120", desc: "Qualified vs total contacts", trend: "+3% vs last week" },
-      { label: "Conversion Rate", shortLabel: "Convert", value: convRate || 23, rgb: "16,185,129", desc: "Closed deals vs qualified", trend: "+1.2% vs last week" }
+      { label: "Pickup Rate", shortLabel: "Pickup", value: pickupRate, rgb: "124,58,237", desc: "Calls answered vs dialed", trend: "+6% vs last week" },
+      { label: "Qualification Rate", shortLabel: "Qualify", value: qualRate, rgb: "220,38,120", desc: "Qualified vs total contacts", trend: "+3% vs last week" },
+      { label: "Conversion Rate", shortLabel: "Convert", value: convRate, rgb: "16,185,129", desc: "Closed deals vs qualified", trend: "+1.2% vs last week" }
     ]
   };
 }
