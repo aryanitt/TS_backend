@@ -89,22 +89,38 @@ const globalSearch = async (req, res) => {
 
     // ── Leads — using lead_name (your actual column) ──
     const leads = await pool.query(
-  `SELECT
-     id,
-     lead_name AS name,
-     COALESCE(company_name, '') AS sub,
-     COALESCE(status, '') AS status,
-     'lead' AS type
-   FROM leads
-   WHERE LOWER(COALESCE(lead_name, '')) LIKE $1
-      OR LOWER(COALESCE(company_name, '')) LIKE $1
-   LIMIT 5`,
-  [term]
-);
+      `SELECT
+         id,
+         lead_name AS name,
+         COALESCE(company_name, '') AS sub,
+         COALESCE(status, '') AS status,
+         'lead' AS type
+       FROM leads
+       WHERE (LOWER(COALESCE(lead_name, '')) LIKE $1
+          OR LOWER(COALESCE(company_name, '')) LIKE $1)
+          AND is_deleted = 0
+       LIMIT 5`,
+      [term]
+    );
+
+    // ── SOPs ──
+    const sops = await pool.query(
+      `SELECT
+         id,
+         title AS name,
+         COALESCE(description, '') AS sub,
+         COALESCE(status, '') AS status,
+         'sop' AS type
+       FROM sops
+       WHERE LOWER(title) LIKE $1
+          OR LOWER(COALESCE(description, '')) LIKE $1
+       LIMIT 5`,
+      [term]
+    );
 
     res.json({
       success: true,
-      results: [...emps.rows, ...leads.rows],
+      results: [...emps.rows, ...leads.rows, ...sops.rows],
     });
 
   } catch (err) {

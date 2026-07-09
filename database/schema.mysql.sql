@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS sops (
   department VARCHAR(100) DEFAULT '',
   estimated_time VARCHAR(50) DEFAULT '',
   script TEXT,
+  scripts JSON DEFAULT ('[]'),
   questions JSON DEFAULT ('[]'),
   frameworks JSON DEFAULT ('[]'),
   tags JSON DEFAULT ('[]'),
@@ -405,6 +406,20 @@ CREATE TABLE IF NOT EXISTS notifications (
   type VARCHAR(50) DEFAULT 'info',
   is_read TINYINT(1) DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS scheduled_lead_assignments (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  tenant_id VARCHAR(50) DEFAULT 'default',
+  lead_id INT NOT NULL,
+  employee_id INT NOT NULL,
+  scheduled_date DATE NOT NULL,
+  status VARCHAR(30) DEFAULT 'pending',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE,
+  FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE,
+  INDEX idx_scheduled_date_status (tenant_id, scheduled_date, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------------

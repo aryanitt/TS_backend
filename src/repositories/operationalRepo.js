@@ -9,6 +9,35 @@ function withId(row, mapper) {
   return { ...mapped, id, _id: id };
 }
 
+function toLocalSqlString(val) {
+  if (!val) return null;
+  if (typeof val === "string") {
+    if (val.includes("T") && val.endsWith("Z")) {
+      const d = new Date(val);
+      if (Number.isNaN(d.getTime())) return val;
+      const year = d.getUTCFullYear();
+      const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+      const date = String(d.getUTCDate()).padStart(2, "0");
+      const hours = String(d.getUTCHours()).padStart(2, "0");
+      const minutes = String(d.getUTCMinutes()).padStart(2, "0");
+      const seconds = String(d.getUTCSeconds()).padStart(2, "0");
+      return `${year}-${month}-${date}T${hours}:${minutes}:${seconds}`;
+    }
+    return val.replace(" ", "T");
+  }
+  if (val instanceof Date) {
+    if (Number.isNaN(val.getTime())) return null;
+    const year = val.getFullYear();
+    const month = String(val.getMonth() + 1).padStart(2, "0");
+    const date = String(val.getDate()).padStart(2, "0");
+    const hours = String(val.getHours()).padStart(2, "0");
+    const minutes = String(val.getMinutes()).padStart(2, "0");
+    const seconds = String(val.getSeconds()).padStart(2, "0");
+    return `${year}-${month}-${date}T${hours}:${minutes}:${seconds}`;
+  }
+  return val;
+}
+
 function mapLead(row, assignedEmployee) {
   if (!row) return null;
   const lead = {
@@ -191,8 +220,8 @@ function mapCall(row) {
     direction: row.direction,
     outcome: row.outcome,
     durationSec: row.duration_sec,
-    startedAt: row.started_at,
-    endedAt: row.ended_at,
+    startedAt: toLocalSqlString(row.started_at),
+    endedAt: toLocalSqlString(row.ended_at),
     sopId: row.sop_id,
     checklistProgress: (() => {
       const raw = row.checklist_progress;
@@ -206,7 +235,7 @@ function mapCall(row) {
     transcript: row.transcript,
     notes: row.notes,
     aiSummary: row.ai_summary,
-    createdAt: row.created_at,
+    createdAt: toLocalSqlString(row.created_at),
   });
 }
 
@@ -218,11 +247,11 @@ function mapFollowup(row) {
     leadId: row.lead_id,
     employeeId: row.employee_id,
     taskId: row.task_id,
-    scheduledAt: row.scheduled_at,
+    scheduledAt: toLocalSqlString(row.scheduled_at),
     note: row.note,
     status: row.status,
-    completedAt: row.completed_at,
-    createdAt: row.created_at,
+    completedAt: toLocalSqlString(row.completed_at),
+    createdAt: toLocalSqlString(row.created_at),
   });
 }
 
@@ -234,13 +263,13 @@ function mapMeeting(row) {
     leadId: row.lead_id,
     employeeId: row.employee_id,
     title: row.title,
-    scheduledAt: row.scheduled_at,
+    scheduledAt: toLocalSqlString(row.scheduled_at),
     durationMin: row.duration_min,
     meetLink: row.meet_link,
     location: row.location,
     status: row.status,
     mom: row.mom || {},
-    createdAt: row.created_at,
+    createdAt: toLocalSqlString(row.created_at),
   });
 }
 
@@ -255,12 +284,12 @@ function mapTask(row) {
     title: row.title,
     description: row.description,
     priority: row.priority,
-    dueAt: row.due_at,
+    dueAt: toLocalSqlString(row.due_at),
     status: row.status,
     sopChecklist: row.sop_checklist || [],
-    completedAt: row.completed_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    completedAt: toLocalSqlString(row.completed_at),
+    createdAt: toLocalSqlString(row.created_at),
+    updatedAt: toLocalSqlString(row.updated_at),
   });
 }
 

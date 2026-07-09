@@ -576,10 +576,33 @@ const getEmpLeadsPipelineStats = async (req, res) => {
   try {
     const rangeKey = req.query.range || "month";
     const service = req.query.service || "All Services";
-    const data = await dataService.getPipelineStatusGrid(undefined, { rangeKey, service });
+    const employee = req.query.employee || "All Employees";
+    const data = await dataService.getPipelineStatusGrid(undefined, { rangeKey, service, employee });
     res.json(data);
   } catch (error) {
     console.error("pipeline-stats error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const getSalesFunnelKPIs = async (req, res) => {
+  try {
+    const { employee, service } = req.query;
+    const data = await dataService.getSalesFunnelKPIs(undefined, { employee, service });
+    res.json(data);
+  } catch (error) {
+    console.error("sales-kpis error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const getOppCategoryLeads = async (req, res) => {
+  try {
+    const { category, employee, service } = req.query;
+    const data = await dataService.getOppCategoryLeads(undefined, { category, employee, service });
+    res.json(data);
+  } catch (error) {
+    console.error("opp-leads error:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -594,5 +617,7 @@ module.exports = {
   createEmpLead,
   getEmpLeads,
   getEmpLeadStatusHistory,
-  getEmpLeadsPipelineStats
+  getEmpLeadsPipelineStats,
+  getSalesFunnelKPIs,
+  getOppCategoryLeads
 };

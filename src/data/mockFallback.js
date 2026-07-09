@@ -3,11 +3,13 @@
 const FILTER_DATA = {
   today: {
     kpis: [
-      { label: "Revenue", value: "₹31.4L", icon: "DollarSign" },
-      { label: "Cash Collected", value: "₹18.7L", icon: "Users" },
-      { label: "Conversion Rate", value: "24%", icon: "Activity" },
-      { label: "Qualified Leads", value: "2,840", icon: "FileText" },
-      { label: "Pipeline Value", value: "₹19.2L", icon: "DollarSign" },
+      { label: "Total Revenue", value: "₹12.0L", icon: "DollarSign" },
+      { label: "Cash Collected", value: "₹1.2L", icon: "DollarSign" },
+      { label: "Total Leads", value: "15", icon: "Users" },
+      { label: "Total Calls Made", value: "48", icon: "Phone" },
+      { label: "Qualified Leads", value: "7", icon: "FileText" },
+      { label: "Pipeline Value", value: "₹91.3L", icon: "DollarSign" },
+      { label: "Closings", value: "3", icon: "Trophy" },
     ],
     leaderboard: [
       { name: "Aryan S.", leads: 18, resp: "1h 20m", qualR: "72%", convR: "19%", conv: 3, rev: "₹0.3L" },
@@ -26,11 +28,13 @@ const FILTER_DATA = {
   },
   week: {
     kpis: [
-      { label: "Revenue", value: "₹7.9L", icon: "DollarSign" },
-      { label: "Cash Collected", value: "₹5.1L", icon: "Users" },
-      { label: "Conversion Rate", value: "24%", icon: "Activity" },
+      { label: "Total Revenue", value: "₹7.9L", icon: "DollarSign" },
+      { label: "Cash Collected", value: "₹5.1L", icon: "DollarSign" },
+      { label: "Total Leads", value: "112", icon: "Users" },
+      { label: "Total Calls Made", value: "342", icon: "Phone" },
       { label: "Qualified Leads", value: "721", icon: "FileText" },
       { label: "Pipeline Value", value: "₹12.4L", icon: "DollarSign" },
+      { label: "Closings", value: "78", icon: "Trophy" },
     ],
     leaderboard: [
       { name: "Priya", leads: 42, resp: "2h", qualR: "68%", convR: "22%", conv: 9, rev: "₹2.4L" },
@@ -49,11 +53,13 @@ const FILTER_DATA = {
   },
   month: {
     kpis: [
-      { label: "Revenue", value: "₹31.4L", icon: "DollarSign" },
-      { label: "Cash Collected", value: "₹22.8L", icon: "Users" },
-      { label: "Conversion Rate", value: "26%", icon: "Activity" },
+      { label: "Total Revenue", value: "₹31.4L", icon: "DollarSign" },
+      { label: "Cash Collected", value: "₹22.8L", icon: "DollarSign" },
+      { label: "Total Leads", value: "3,520", icon: "Users" },
+      { label: "Total Calls Made", value: "1,240", icon: "Phone" },
       { label: "Qualified Leads", value: "2,840", icon: "FileText" },
       { label: "Pipeline Value", value: "₹48.6L", icon: "DollarSign" },
+      { label: "Closings", value: "312", icon: "Trophy" },
     ],
     leaderboard: [
       { name: "Alex Chen", leads: 124, resp: "1h 50m", qualR: "74%", convR: "28%", conv: 24, rev: "₹4.1L" },

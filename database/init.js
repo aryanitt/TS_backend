@@ -13,6 +13,7 @@ async function initDatabase() {
         department VARCHAR(100) DEFAULT '',
         estimated_time VARCHAR(50) DEFAULT '',
         script TEXT,
+        scripts JSON DEFAULT ('[]'),
         questions JSON DEFAULT ('[]'),
         frameworks JSON DEFAULT ('[]'),
         tags JSON DEFAULT ('[]'),
@@ -489,6 +490,22 @@ async function initDatabase() {
     `);
 
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS scheduled_lead_assignments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        tenant_id VARCHAR(50) DEFAULT 'default',
+        lead_id INT NOT NULL,
+        employee_id INT NOT NULL,
+        scheduled_date DATE NOT NULL,
+        status VARCHAR(30) DEFAULT 'pending',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE,
+        FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE,
+        INDEX idx_scheduled_date_status (tenant_id, scheduled_date, status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id INT AUTO_INCREMENT PRIMARY KEY,
         login_id VARCHAR(64) NOT NULL,
@@ -512,6 +529,12 @@ async function initDatabase() {
       ALTER TABLE employees ADD COLUMN user_id INT NULL
     `).catch((error) => {
       if (error.code !== "ER_DUP_FIELDNAME") throw error;
+    });
+
+    await pool.query(`
+      ALTER TABLE sops ADD COLUMN scripts JSON DEFAULT ('[]')
+    `).catch((error) => {
+      if (error.code !== "ER_DUP_FIELDNAME" && error.code !== "ER_CANT_ADD_TO_INDEX") throw error;
     });
 
     const indexes = [

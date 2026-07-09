@@ -46,6 +46,7 @@ const {
   getAdminKpis,
   getPipelineGrouped,
   writeTimeline,
+  scheduleLeadAssignments,
 } = require("../services/operationalServices");
 const callyzer = require("../services/callyzerService");
 
@@ -333,6 +334,25 @@ router.post("/assignment/bulk-assign", validate(bulkAssignSchema), asyncRoute(as
     actor: actor(req),
   });
   return ok(res, results, { count: results.length });
+}));
+
+router.post("/assignment/schedule-assign", asyncRoute(async (req, res) => {
+  if (req.user?.role === "employee") {
+    return res.status(403).json({ success: false, message: "Only admins can schedule lead assignments" });
+  }
+  const { leadIds, employeeId, startDate, leadsPerDay } = req.body;
+  if (!leadIds || !employeeId || !startDate || !leadsPerDay) {
+    return res.status(400).json({ success: false, message: "Missing required fields: leadIds, employeeId, startDate, leadsPerDay" });
+  }
+  const result = await scheduleLeadAssignments({
+    tenantId: tenant(req),
+    leadIds,
+    employeeId,
+    startDate,
+    leadsPerDay,
+    actor: actor(req),
+  });
+  return ok(res, result);
 }));
 
 router.post("/assignment/run-round-robin", asyncRoute(async (req, res) => {

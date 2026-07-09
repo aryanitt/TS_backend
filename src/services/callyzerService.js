@@ -110,10 +110,8 @@ function employeeEmpNumbers(employee) {
     else if (d.length > 10) numbers.add(`${d.slice(0, d.length - 10)}-${d.slice(-10)}`);
   }
 
-  const empCode = employee.empCode || employee.emp_id;
-  if (empCode && !numbers.size) {
-    numbers.add(String(empCode).trim());
-  }
+  // NOTE: Do NOT fall back to empCode/emp_id — those are internal DB IDs,
+  // not Callyzer phone numbers. An empty result triggers the guidance message.
 
   return [...numbers].filter(Boolean);
 }
@@ -359,6 +357,7 @@ async function fetchCallHistory({ empNumbers, days = 30, pageSize = 100 }) {
 }
 
 const statsCache = new Map();
+const LONG_CONVERSATION_MIN_SEC = 300;
 
 function formatDurationHms(seconds) {
   const total = Number(seconds) || 0;
@@ -446,6 +445,34 @@ async function fetchEmployeeSummary({ empNumbers, period = "today" }) {
   return stats;
 }
 
+async function fetchLongConversationStats({ empNumbers, period = "today" }) {
+  if (!empNumbers?.length) {
+    return { conversations5MinPlus: 0, conversations5MinDuration: "0h 0m 0s" };
+  }
+
+  const range = getPeriodRange(period);
+  const cacheKey = `long-conv:${empNumbers.sort().join(",")}:${range.period}:${range.callFrom}`;
+  const cached = statsCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < 120000) {
+    return cached.stats;
+  }
+
+  const response = await callyzerPost("/call-log/summary", {
+    call_from: range.callFrom,
+    call_to: range.callTo,
+    emp_numbers: empNumbers,
+    duration_grt_than: LONG_CONVERSATION_MIN_SEC - 1,
+  });
+
+  const result = response.result && !Array.isArray(response.result) ? response.result : {};
+  const stats = {
+    conversations5MinPlus: Number(result.total_connected_calls) || Number(result.total_calls) || 0,
+    conversations5MinDuration: formatDurationHms(result.total_duration),
+  };
+  statsCache.set(cacheKey, { at: Date.now(), stats });
+  return stats;
+}
+
 async function fetchTeamSummary(period = "today") {
   const range = getPeriodRange(period);
   const cacheKey = `team-stats:${range.period}:${range.callFrom}`;
@@ -482,7 +509,12 @@ async function getStatsForEmployee(employee, period = "today") {
 
   try {
     const stats = await fetchEmployeeSummary({ empNumbers, period });
-    return { configured: true, stats, period: getPeriodRange(period).period };
+    const longConv = await fetchLongConversationStats({ empNumbers, period });
+    return {
+      configured: true,
+      stats: { ...stats, ...longConv },
+      period: getPeriodRange(period).period,
+    };
   } catch (err) {
     logger.error("Callyzer stats fetch failed", { employeeId: employee.id, message: err.message });
     return { configured: true, stats: null, message: err.message };
@@ -558,6 +590,7 @@ module.exports = {
   prepareLeadCall,
   fetchCallHistory,
   fetchEmployeeSummary,
+  fetchLongConversationStats,
   fetchTeamSummary,
   getStatsForEmployee,
   getPeriodRange,

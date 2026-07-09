@@ -34,8 +34,8 @@ async function fetchSopById(id) {
 async function insertSopRow(values) {
   const result = await pool.query(
     `INSERT INTO sops
-      (title, description, category, status, priority, department, estimated_time, script, questions, frameworks, tags, instruction_steps, attachment_url)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      (title, description, category, status, priority, department, estimated_time, script, questions, frameworks, tags, instruction_steps, attachment_url, scripts)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
     values,
   );
   const insertId = result.insertId ?? result.rows?.[0]?.id;
@@ -63,6 +63,7 @@ const buildSopValues = (body) => {
     department,
     estimated_time,
     script,
+    scripts,
     questions,
     frameworks,
     tags,
@@ -115,6 +116,7 @@ const buildSopValues = (body) => {
     Array.isArray(tags) ? tags : [],
     steps,
     attachment_url || null,
+    Array.isArray(scripts) ? scripts : [],
   ];
 };
 
@@ -212,8 +214,9 @@ async function listAllSops() {
           tags = $11,
           instruction_steps = $12,
           attachment_url = $13,
+          scripts = $14,
           updated_at = NOW()
-         WHERE id = $14`,
+         WHERE id = $15`,
         values
       );
 
@@ -309,6 +312,7 @@ async function listAllSops() {
         sop.tags || [],
         sop.instruction_steps || [],
         sop.attachment_url,
+        sop.scripts || [],
       ]);
 
       res.status(201).json({
