@@ -994,13 +994,33 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
         ]
       };
     }
+    if (empLower.includes("sourav")) {
+      return {
+        success: true,
+        source: "mock",
+        kpiData: [
+          { label: "Leads Assigned", value: "13" },
+          { label: "Calls Done", value: "17" },
+          { label: "Qualified Leads", value: "4" },
+          { label: "Meetings Done", value: "0" },
+          { label: "Proposal Sent", value: "1" },
+          { label: "Revenue", value: "₹20.0L" }
+        ],
+        oppData: { notContacted: 2, unqualified: 0, noMeeting: 0, stuckNegotiation: 0 },
+        metrics: [
+          { label: "Pickup Rate", shortLabel: "Pickup", value: 80, rgb: "124,58,237", desc: "Calls answered vs dialed", trend: "+5% vs last week" },
+          { label: "Qualification Rate", shortLabel: "Qualify", value: 31, rgb: "220,38,120", desc: "Qualified vs total contacts", trend: "+2% vs last week" },
+          { label: "Conversion Rate", shortLabel: "Convert", value: 25, rgb: "16,185,129", desc: "Closed deals vs qualified", trend: "+1% vs last week" }
+        ]
+      };
+    }
     return {
       success: true,
       source: "mock",
       kpiData: [
         { label: "Leads Assigned", value: "14" },
         { label: "Calls Done", value: "30" },
-        { label: "Qualified Leads", value: "5" },
+        { label: "Qualified Leads", value: "4" },
         { label: "Meetings Done", value: "0" },
         { label: "Proposal Sent", value: "1" },
         { label: "Revenue", value: "₹20.0L" }
