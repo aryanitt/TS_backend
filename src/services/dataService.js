@@ -419,7 +419,39 @@ async function getDashboardBundle(tenantId = TENANT) {
   const empty = emptyFilterData();
 
   if (!(await dbReady())) {
-    return { source: "offline", filterData: empty, revenueSeries: [], aiInsights: mock.aiInsights, success: true };
+    const mockRange = {
+      kpis: [
+        { label: "Total Revenue",     value: "₹20.0L", icon: "DollarSign", trendVal: "+14.2%", sub: "MoM Gross ..." },
+        { label: "Cash Collected",    value: "₹14.3L", icon: "DollarSign", trendVal: "+18.4%", sub: "Cash Genera..." },
+        { label: "Total Leads",       value: "14",      icon: "Users",      trendVal: "+8.5%",  sub: "New Leads" },
+        { label: "Total Calls Made",  value: "30",      icon: "Phone",      trendVal: "+12.4%", sub: "Call Volume" },
+        { label: "Qualified Leads",   value: "4",       icon: "FileText",   trendVal: "+6.2%",  sub: "Qualified" },
+        { label: "Pipeline Value",    value: "₹91.3L",  icon: "DollarSign", trendVal: "+4.2%",  sub: "Target vs Ach..." },
+        { label: "Closings",          value: "2",       icon: "Trophy",     trendVal: "+10.5%", sub: "Closed Won" },
+      ],
+      leaderboard: [
+        { name: "Sourav",      leads: 13, resp: "2h 10m", qualR: "31%", convR: "15%", conv: 2, rev: "₹20.0L" },
+        { name: "Ritik Verma", leads: 1,  resp: "3h 40m", qualR: "0%",  convR: "0%",  conv: 0, rev: "₹0" },
+        { name: "Aryan",       leads: 0,  resp: "—",      qualR: "0%",  convR: "0%",  conv: 0, rev: "₹0" },
+      ],
+      metrics: { pickup: 78, qualification: 29, conversion: 15 },
+      insights: [
+        { type: "check", title: "2 deals closed this period", body: "Sourav converted 2 warm leads successfully." },
+        { type: "warn",  title: "1 lead needs follow-up", body: "Ritik's warm lead has not been contacted yet." },
+      ],
+      activity: [
+        { type: "check", text: "Sourav converted 2 deals this week" },
+        { type: "check", text: "Ritik assigned 1 warm lead" },
+        { type: "warn",  text: "Aryan has no active leads" },
+      ],
+    };
+    return {
+      source: "mock",
+      filterData: { today: mockRange, week: mockRange, month: mockRange },
+      revenueSeries: mock.revenueSeries || [],
+      aiInsights: mock.aiInsights || [],
+      success: true,
+    };
   }
 
   try {
