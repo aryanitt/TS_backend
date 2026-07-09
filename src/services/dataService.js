@@ -72,40 +72,39 @@ function normalizeLeadText(value) {
 }
 
 function mapLeadToPipelineColumn(row) {
-  const stage = String(row.pipeline_stage || "").toLowerCase().trim();
-  const status = String(row.status || "").toLowerCase().trim();
+  const stageRaw = String(row.pipeline_stage || row.status || "new").toLowerCase().trim();
 
-  if (
-    stage === "new" ||
-    stage === "new lead" ||
-    stage === "not_interested" ||
-    stage === "not interested" ||
-    status === "not interested" ||
-    status === "not_interested"
-  ) {
+  let stage = "new";
+  const STAGE_MAP = [
+    ["closed won", "closed_won"],
+    ["converted", "closed_won"],
+    ["won", "closed_won"],
+    ["not interested", "not_interested"],
+    ["not_interested", "not_interested"],
+    ["ni", "not_interested"],
+    ["negotiation", "negotiation"],
+    ["proposal", "proposal"],
+    ["qualified", "qualified"],
+    ["contacted", "contacted"],
+    ["new", "new"],
+  ];
+  for (const [needle, id] of STAGE_MAP) {
+    if (stageRaw.includes(needle)) {
+      stage = id;
+      break;
+    }
+  }
+
+  if (stage === "new" || stage === "not_interested") {
     return null;
   }
+  if (stage === "closed_won") return "Conversion";
+  if (stage === "negotiation") return "Negotiation";
+  if (stage === "proposal") return "Meeting";
+  if (stage === "qualified") return "Qualified";
+  if (stage === "contacted") return "Contacted";
 
-  const pipeline = mapStageToPipeline(row.pipeline_stage || row.status);
-
-  if (pipeline === "closed_won" || ["converted", "won", "closed"].includes(status)) {
-    return "Conversion";
-  }
-  if (pipeline === "negotiation" || status.includes("negotiat")) {
-    return "Negotiation";
-  }
-  if (pipeline === "proposal" || status.includes("meeting") || status.includes("proposal")) {
-    return "Meeting";
-  }
-  if (
-    pipeline === "qualified" ||
-    status.includes("qualif") ||
-    status.includes("warm lead") ||
-    status.includes("hot lead")
-  ) {
-    return "Qualified";
-  }
-  return "Contacted";
+  return null;
 }
 
 function mapLeadToTemperature(row) {
@@ -209,25 +208,25 @@ async function getPipelineStatusGrid(tenantId = TENANT, options = {}) {
     }
     if (empLower.includes("ritik")) {
       const ritikGrid = buildPipelineStatusGrid([
-        { pipeline_stage: "Attempted", status: "Attempted", temperature: "Warm Lead", form_name: "AI Automation Suite" }
+        { pipeline_stage: "New", status: "New", temperature: "Warm Lead", form_name: "AI Automation Suite" }
       ]);
       return { success: true, source: "mock", ...ritikGrid };
     }
     const allMockLeads = [
-      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Hot Lead", form_name: "AI Automation Suite" },
-      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Hot Lead", form_name: "AI Automation Suite" },
-      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Warm Lead", form_name: "Lead Gen Engine" },
-      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Warm Lead", form_name: "Lead Gen Engine" },
-      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Cold Lead", form_name: "Custom Software Dev" },
-      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Cold Lead", form_name: "Custom Software Dev" },
-      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Cold Lead", form_name: "Custom Software Dev" },
-      { pipeline_stage: "Attempted", status: "Attempted", temperature: "Cold Lead", form_name: "Custom Software Dev" },
-      { pipeline_stage: "Call Booked", status: "Call Booked", temperature: "Warm Lead", form_name: "Strategic Consulting" },
-      { pipeline_stage: "Call Booked", status: "Call Booked", temperature: "Warm Lead", form_name: "Strategic Consulting" },
-      { pipeline_stage: "Call Booked", status: "Call Booked", temperature: "Cold Lead", form_name: "Strategic Consulting" },
-      { pipeline_stage: "Proposal Sent", status: "Proposal Sent", temperature: "Warm Lead", form_name: "CRM Setup & Onboarding" },
-      { pipeline_stage: "Converted", status: "Converted", temperature: "Warm Lead", form_name: "CRM Setup & Onboarding" },
-      { pipeline_stage: "Converted", status: "Converted", temperature: "Warm Lead", form_name: "CRM Setup & Onboarding" }
+      { pipeline_stage: "New", status: "New", temperature: "Hot Lead" },
+      { pipeline_stage: "New", status: "New", temperature: "Warm Lead" },
+      { pipeline_stage: "New", status: "New", temperature: "Warm Lead" },
+      { pipeline_stage: "New", status: "New", temperature: "Cold Lead" },
+      { pipeline_stage: "New", status: "New", temperature: "Cold Lead" },
+      { pipeline_stage: "New", status: "New", temperature: "Cold Lead" },
+      { pipeline_stage: "New", status: "New", temperature: "Cold Lead" },
+      { pipeline_stage: "Contacted", status: "Contacted", temperature: "Warm Lead" },
+      { pipeline_stage: "Contacted", status: "Contacted", temperature: "Cold Lead" },
+      { pipeline_stage: "Qualified", status: "Qualified", temperature: "Warm Lead" },
+      { pipeline_stage: "Qualified", status: "Qualified", temperature: "Cold Lead" },
+      { pipeline_stage: "Negotiation", status: "Negotiation", temperature: "Warm Lead" },
+      { pipeline_stage: "Converted", status: "Converted", temperature: "Warm Lead" },
+      { pipeline_stage: "Converted", status: "Converted", temperature: "Warm Lead" }
     ];
     const allGrid = buildPipelineStatusGrid(allMockLeads);
     return { success: true, source: "mock", ...allGrid };
