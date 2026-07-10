@@ -983,169 +983,140 @@ async function getIncentivesData(tenantId = TENANT, month) {
 async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
   const { employee = "All Employees", service = "All Services" } = options;
 
+  // If DB not available, return empty zeros — no mock data
   if (!(await dbReady())) {
-    const empLower = String(employee || "").toLowerCase();
-    if (empLower.includes("aryan")) {
-      return {
-        success: true,
-        source: "mock",
-        kpiData: [
-          { label: "Leads Assigned", value: "0" },
-          { label: "Calls Done", value: "0" },
-          { label: "Qualified Leads", value: "0" },
-          { label: "Meetings Done", value: "0" },
-          { label: "Proposal Sent", value: "0" },
-          { label: "Revenue", value: "₹0" }
-        ],
-        oppData: { notContacted: 0, unqualified: 0, noMeeting: 0, stuckNegotiation: 0 },
-        metrics: [
-          { label: "Pickup Rate", shortLabel: "Pickup", value: 0, rgb: "124,58,237", desc: "Calls answered vs dialed", trend: "0% vs last week" },
-          { label: "Qualification Rate", shortLabel: "Qualify", value: 0, rgb: "220,38,120", desc: "Qualified vs total contacts", trend: "0% vs last week" },
-          { label: "Conversion Rate", shortLabel: "Convert", value: 0, rgb: "16,185,129", desc: "Closed deals vs qualified", trend: "0% vs last week" }
-        ]
-      };
-    }
-    if (empLower.includes("ritik")) {
-      return {
-        success: true,
-        source: "mock",
-        kpiData: [
-          { label: "Leads Assigned", value: "1" },
-          { label: "Calls Done", value: "13" },
-          { label: "Qualified Leads", value: "0" },
-          { label: "Meetings Done", value: "0" },
-          { label: "Proposal Sent", value: "0" },
-          { label: "Revenue", value: "₹0" }
-        ],
-        oppData: { notContacted: 1, unqualified: 0, noMeeting: 0, stuckNegotiation: 0 },
-        metrics: [
-          { label: "Pickup Rate", shortLabel: "Pickup", value: 0, rgb: "124,58,237", desc: "Calls answered vs dialed", trend: "0% vs last week" },
-          { label: "Qualification Rate", shortLabel: "Qualify", value: 0, rgb: "220,38,120", desc: "Qualified vs total contacts", trend: "0% vs last week" },
-          { label: "Conversion Rate", shortLabel: "Convert", value: 0, rgb: "16,185,129", desc: "Closed deals vs qualified", trend: "0% vs last week" }
-        ]
-      };
-    }
-    if (empLower.includes("sourav")) {
-      return {
-        success: true,
-        source: "mock",
-        kpiData: [
-          { label: "Leads Assigned", value: "13" },
-          { label: "Calls Done", value: "17" },
-          { label: "Qualified Leads", value: "4" },
-          { label: "Meetings Done", value: "0" },
-          { label: "Proposal Sent", value: "1" },
-          { label: "Revenue", value: "₹20.0L" }
-        ],
-        oppData: { notContacted: 2, unqualified: 0, noMeeting: 0, stuckNegotiation: 0 },
-        metrics: [
-          { label: "Pickup Rate", shortLabel: "Pickup", value: 80, rgb: "124,58,237", desc: "Calls answered vs dialed", trend: "+5% vs last week" },
-          { label: "Qualification Rate", shortLabel: "Qualify", value: 31, rgb: "220,38,120", desc: "Qualified vs total contacts", trend: "+2% vs last week" },
-          { label: "Conversion Rate", shortLabel: "Convert", value: 25, rgb: "16,185,129", desc: "Closed deals vs qualified", trend: "+1% vs last week" }
-        ]
-      };
-    }
+    const emptyMetrics = [
+      { label: "Pickup Rate",        shortLabel: "Pickup",   value: 0, rgb: "124,58,237",  desc: "Calls answered vs dialed",       trend: "—" },
+      { label: "Qualification Rate", shortLabel: "Qualify",  value: 0, rgb: "220,38,120",  desc: "Qualified vs total leads",        trend: "—" },
+      { label: "Conversion Rate",    shortLabel: "Convert",  value: 0, rgb: "16,185,129",  desc: "Closed deals vs total leads",     trend: "—" },
+    ];
     return {
       success: true,
-      source: "mock",
+      source: "offline",
       kpiData: [
-        { label: "Leads Assigned", value: "14" },
-        { label: "Calls Done", value: "30" },
-        { label: "Qualified Leads", value: "4" },
-        { label: "Meetings Done", value: "0" },
-        { label: "Proposal Sent", value: "1" },
-        { label: "Revenue", value: "₹20.0L" }
+        { label: "Leads Assigned",  value: "0"  },
+        { label: "Calls Done",      value: "0"  },
+        { label: "Qualified Leads", value: "0"  },
+        { label: "Meetings Done",   value: "0"  },
+        { label: "Proposal Sent",   value: "0"  },
+        { label: "Revenue",         value: "₹0" },
       ],
-      oppData: { notContacted: 3, unqualified: 0, noMeeting: 0, stuckNegotiation: 0 },
-      metrics: [
-        { label: "Pickup Rate", shortLabel: "Pickup", value: 78, rgb: "124,58,237", desc: "Calls answered vs dialed", trend: "+6% vs last week" },
-        { label: "Qualification Rate", shortLabel: "Qualify", value: 42, rgb: "220,38,120", desc: "Qualified vs total contacts", trend: "+3% vs last week" },
-        { label: "Conversion Rate", shortLabel: "Convert", value: 23, rgb: "16,185,129", desc: "Closed deals vs qualified", trend: "+1.2% vs last week" }
-      ]
+      oppData: { notContacted: 0, unqualified: 0, noMeeting: 0, stuckNegotiation: 0 },
+      metrics: emptyMetrics,
     };
   }
 
+  // ── Build WHERE filters ──────────────────────────────────────────────────────
   let leadsParams = [tenantId];
-  let leadsWhere = "l.tenant_id = $1 AND l.is_deleted = 0";
-  
+  let leadsWhere  = "l.tenant_id = $1 AND l.is_deleted = 0";
+
   if (employee && employee !== "All Employees") {
     leadsParams.push(employee);
-    const empIdx = leadsParams.length;
-    leadsWhere += ` AND l.assigned_to = (SELECT id FROM employees WHERE name = $${empIdx} LIMIT 1)`;
+    leadsWhere += ` AND l.assigned_to = (SELECT id FROM employees WHERE tenant_id = $1 AND name = $${leadsParams.length} LIMIT 1)`;
   }
-  
   if (service && service !== "All Services") {
     leadsParams.push(`%${service}%`);
-    const srvIdx = leadsParams.length;
-    leadsWhere += ` AND (l.form_name LIKE $${srvIdx} OR l.keyword LIKE $${srvIdx} OR l.source LIKE $${srvIdx})`;
+    const si = leadsParams.length;
+    leadsWhere += ` AND (l.form_name LIKE $${si} OR l.keyword LIKE $${si} OR l.source LIKE $${si})`;
   }
 
   let callsParams = [tenantId];
-  let callsWhere = "tenant_id = $1";
-  
+  let callsWhere  = "tenant_id = $1";
   if (employee && employee !== "All Employees") {
     callsParams.push(employee);
-    const empIdx = callsParams.length;
-    callsWhere += ` AND employee_id = (SELECT id FROM employees WHERE name = $${empIdx} LIMIT 1)`;
+    callsWhere += ` AND employee_id = (SELECT id FROM employees WHERE tenant_id = $1 AND name = $${callsParams.length} LIMIT 1)`;
   }
 
-  const [leadsResult, callsResult] = await Promise.all([
+  let meetingsParams = [tenantId];
+  let meetingsWhere  = "tenant_id = $1";
+  if (employee && employee !== "All Employees") {
+    meetingsParams.push(employee);
+    meetingsWhere += ` AND employee_id = (SELECT id FROM employees WHERE tenant_id = $1 AND name = $${meetingsParams.length} LIMIT 1)`;
+  }
+
+  // ── Run queries in parallel ─────────────────────────────────────────────────
+  const [leadsResult, callsResult, meetingsResult] = await Promise.all([
     pool.query(
-      `SELECT 
-         COUNT(*) AS total_leads,
-         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage, '')) IN ('qualified', 'call booked', 'proposal sent', 'negotiation', 'converted') OR LOWER(COALESCE(status, '')) IN ('qualified', 'warm') THEN 1 ELSE 0 END) AS qualified_leads,
-         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage, '')) IN ('converted', 'won', 'closed won') OR LOWER(COALESCE(status, '')) IN ('converted', 'won') THEN 1 ELSE 0 END) AS converted_leads,
-         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage, '')) IN ('meeting', 'meeting booked', 'meeting done', 'demo') OR LOWER(COALESCE(status, '')) LIKE '%meeting%' THEN 1 ELSE 0 END) AS meetings_done,
-         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage, '')) IN ('proposal sent', 'negotiation') OR LOWER(COALESCE(status, '')) LIKE '%proposal%' THEN 1 ELSE 0 END) AS proposal_sent,
-         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage, '')) IN ('converted', 'won', 'closed won') OR LOWER(COALESCE(status, '')) IN ('converted', 'won') THEN expected_revenue ELSE 0 END) AS revenue,
-         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage, 'new lead')) = 'new lead' AND (interactions IS NULL OR interactions = 0) THEN 1 ELSE 0 END) AS not_contacted,
-         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage, '')) = 'unqualified' OR LOWER(COALESCE(status, '')) IN ('not interested', 'unqualified') THEN 1 ELSE 0 END) AS unqualified,
-         SUM(CASE WHEN (LOWER(COALESCE(pipeline_stage, '')) = 'qualified' OR LOWER(COALESCE(status, '')) IN ('qualified', 'warm')) AND LOWER(COALESCE(pipeline_stage, '')) NOT IN ('meeting', 'meeting booked', 'meeting done', 'demo') THEN 1 ELSE 0 END) AS meeting_not_scheduled,
-         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage, '')) = 'negotiation' THEN 1 ELSE 0 END) AS stuck_negotiation
+      `SELECT
+         COUNT(*)                                                                         AS total_leads,
+         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN
+               ('qualified','call booked','proposal sent','negotiation',
+                'converted','closed won','showed up','booked')
+             OR   LOWER(COALESCE(status,''))  IN ('qualified','warm','booked')
+             THEN 1 ELSE 0 END)                                                          AS qualified_leads,
+         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('converted','won','closed won')
+             OR   LOWER(COALESCE(status,''))  IN ('converted','won')
+             THEN 1 ELSE 0 END)                                                          AS converted_leads,
+         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('proposal sent','negotiation')
+             OR   LOWER(COALESCE(status,''))  LIKE '%proposal%'
+             THEN 1 ELSE 0 END)                                                          AS proposal_sent,
+         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('converted','won','closed won')
+             OR   LOWER(COALESCE(status,''))  IN ('converted','won')
+             THEN COALESCE(expected_revenue,0) ELSE 0 END)                               AS revenue,
+         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'new lead')) IN ('new lead','attempted')
+             AND (interactions IS NULL OR interactions = 0)
+             THEN 1 ELSE 0 END)                                                          AS not_contacted,
+         SUM(CASE WHEN LOWER(COALESCE(status,''))  IN ('not interested','unqualified')
+             THEN 1 ELSE 0 END)                                                          AS unqualified,
+         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) = 'negotiation'
+             THEN 1 ELSE 0 END)                                                          AS stuck_negotiation
        FROM leads l
        WHERE ${leadsWhere}`,
       leadsParams
     ),
     pool.query(
-      `SELECT 
-         COUNT(*) AS total_calls,
-         SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END) AS connected_calls
+      `SELECT
+         COUNT(*)                                             AS total_calls,
+         SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END)  AS connected_calls
        FROM employee_calls WHERE ${callsWhere}`,
       callsParams
-    )
+    ),
+    pool.query(
+      `SELECT COUNT(*) AS meetings_done FROM meetings WHERE ${meetingsWhere}`,
+      meetingsParams
+    ),
   ]);
 
-  const row = leadsResult.rows[0] || {};
-  const totalCalls = callsResult.rows[0]?.total_calls || 0;
-  const connectedCalls = callsResult.rows[0]?.connected_calls || 0;
+  // ── Compute values ──────────────────────────────────────────────────────────
+  const row            = leadsResult.rows[0]   || {};
+  const totalLeads     = Number(row.total_leads     || 0);
+  const qualifiedLeads = Number(row.qualified_leads || 0);
+  const convertedLeads = Number(row.converted_leads || 0);
+  const totalCalls     = Number(callsResult.rows[0]?.total_calls     || 0);
+  const connectedCalls = Number(callsResult.rows[0]?.connected_calls || 0);
+  const meetingsDone   = Number(meetingsResult.rows[0]?.meetings_done || 0);
+  const meetingNotScheduled = Math.max(0, qualifiedLeads - meetingsDone);
 
-  const pickupRate = totalCalls > 0 ? Math.round((connectedCalls / totalCalls) * 100) : 0;
-  const qualRate = row.total_leads > 0 ? Math.round((row.qualified_leads / row.total_leads) * 100) : 0;
-  const convRate = row.qualified_leads > 0 ? Math.round((row.converted_leads / row.qualified_leads) * 100) : 0;
+  // Rates — all capped 0-100
+  const pickupRate = totalCalls     > 0 ? Math.min(100, Math.round((connectedCalls / totalCalls)     * 100)) : 0;
+  const qualRate   = totalLeads     > 0 ? Math.min(100, Math.round((qualifiedLeads / totalLeads)     * 100)) : 0;
+  const convRate   = totalLeads     > 0 ? Math.min(100, Math.round((convertedLeads / totalLeads)     * 100)) : 0;
 
   return {
     success: true,
+    source: "database",
     kpiData: [
-      { label: "Leads Assigned", value: String(row.total_leads || 0) },
-      { label: "Calls Done", value: String(totalCalls || 0) },
-      { label: "Qualified Leads", value: String(row.qualified_leads || 0) },
-      { label: "Meetings Done", value: String(row.meetings_done || 0) },
-      { label: "Proposal Sent", value: String(row.proposal_sent || 0) },
-      { label: "Revenue", value: formatINR(row.revenue || 0) }
+      { label: "Leads Assigned",  value: String(totalLeads)                       },
+      { label: "Calls Done",      value: String(totalCalls)                        },
+      { label: "Qualified Leads", value: String(qualifiedLeads)                    },
+      { label: "Meetings Done",   value: String(meetingsDone)                      },
+      { label: "Proposal Sent",   value: String(row.proposal_sent || 0)            },
+      { label: "Revenue",         value: formatINR(row.revenue    || 0)            },
     ],
     oppData: {
-      notContacted: Number(row.not_contacted || 0),
-      unqualified: Number(row.unqualified || 0),
-      noMeeting: Number(row.meeting_not_scheduled || 0),
-      stuckNegotiation: Number(row.stuck_negotiation || 0)
+      notContacted:     Number(row.not_contacted    || 0),
+      unqualified:      Number(row.unqualified      || 0),
+      noMeeting:        meetingNotScheduled,
+      stuckNegotiation: Number(row.stuck_negotiation || 0),
     },
     metrics: [
-      { label: "Pickup Rate", shortLabel: "Pickup", value: pickupRate, rgb: "124,58,237", desc: "Calls answered vs dialed", trend: "+6% vs last week" },
-      { label: "Qualification Rate", shortLabel: "Qualify", value: qualRate, rgb: "220,38,120", desc: "Qualified vs total contacts", trend: "+3% vs last week" },
-      { label: "Conversion Rate", shortLabel: "Convert", value: convRate, rgb: "16,185,129", desc: "Closed deals vs qualified", trend: "+1.2% vs last week" }
-    ]
+      { label: "Pickup Rate",        shortLabel: "Pickup",  value: pickupRate, rgb: "124,58,237", desc: "Calls answered vs dialed",   trend: `${pickupRate}% pickup` },
+      { label: "Qualification Rate", shortLabel: "Qualify", value: qualRate,   rgb: "220,38,120", desc: "Qualified vs total leads",    trend: `${qualRate}% qualified` },
+      { label: "Conversion Rate",    shortLabel: "Convert", value: convRate,   rgb: "16,185,129", desc: "Closed deals vs total leads", trend: `${convRate}% converted` },
+    ],
   };
 }
+
 
 async function getOppCategoryLeads(tenantId = TENANT, options = {}) {
   const { category, employee, service } = options;
