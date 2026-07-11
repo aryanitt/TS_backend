@@ -561,13 +561,53 @@ router.get("/employee/:employeeId/calls", requireEmployeeSelf(), asyncRoute(asyn
 
 router.get("/employee/:employeeId/callyzer/stats", requireEmployeeSelf(), asyncRoute(async (req, res) => {
   const tenantId = tenant(req);
-  const employee = await repo.findEmployeeById(tenantId, req.params.employeeId);
-  if (!employee) {
-    return res.status(404).json({ success: false, message: "Employee not found" });
-  }
+  const employeeId = req.params.employeeId;
+  const month = req.query.month; // e.g. "2026-07"
   const period = String(req.query.period || "today").toLowerCase();
-  const payload = await callyzer.getStatsForEmployee(employee, period);
-  return ok(res, payload);
+
+  let dateWhere = "1=1";
+  let params = [tenantId, employeeId];
+
+  if (month) {
+    dateWhere = "DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = $3";
+    params.push(month);
+  } else if (period === "today") {
+    dateWhere = "DATE(COALESCE(started_at, created_at)) = CURRENT_DATE()";
+  } else if (period === "yesterday") {
+    dateWhere = "DATE(COALESCE(started_at, created_at)) = CURRENT_DATE() - INTERVAL 1 DAY";
+  } else if (period === "this_month" || period === "month") {
+    dateWhere = "DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = DATE_FORMAT(CURRENT_DATE(), '%Y-%m')";
+  } else if (period === "last_month") {
+    dateWhere = "DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = DATE_FORMAT(CURRENT_DATE() - INTERVAL 1 MONTH, '%Y-%m')";
+  }
+
+  const queryText = `
+    SELECT 
+      COUNT(*) AS total_calls,
+      SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END) AS connected_calls,
+      AVG(duration_sec) AS avg_duration_sec
+    FROM employee_calls
+    WHERE tenant_id = $1 AND employee_id = $2 AND ${dateWhere}
+  `;
+
+  const result = await pool.query(queryText, params);
+  const row = result.rows[0] || {};
+  const total = Number(row.total_calls) || 0;
+  const connected = Number(row.connected_calls) || 0;
+  const avgDurationSec = Math.round(Number(row.avg_duration_sec) || 0);
+  const pickupRate = total > 0 ? Math.min(100, Math.round((connected / total) * 100)) : 0;
+
+  return ok(res, {
+    success: true,
+    configured: true,
+    stats: {
+      total,
+      connectedCalls: connected,
+      pickupRate,
+      avgDurationSec
+    },
+    period: month || period
+  });
 }));
 
 router.post("/employee/followups", validate(followupSchema), requireEmployeeSelfBody("employeeId"), requireEmployeeOwnsLeadBody("leadId"), asyncRoute(async (req, res) => {
