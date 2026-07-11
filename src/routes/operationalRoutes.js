@@ -751,6 +751,32 @@ router.post("/webhooks/callyzer", asyncRoute(async (req, res) => {
       if (!lead) {
         lead = await repo.findLeadByPhone(tenantId, log.client_number, { assignedTo: employee.id });
       }
+      
+      if (!lead) {
+        const clientPhone = callyzer.normalizePhone(log.client_country_code, log.client_number).full || log.client_number;
+        const leadName = log.client_name || "Unknown Lead";
+        
+        const existingLead = await repo.findLeadByPhone(tenantId, clientPhone);
+        if (existingLead) {
+          lead = existingLead;
+        } else {
+          try {
+            const { lead: newLead } = await createLead({
+              leadName,
+              phone: clientPhone,
+              source: "Callyzer",
+              pipelineStage: "Contacted",
+              status: "Contacted",
+              temperature: "warm",
+              assignedTo: employee.id,
+            }, { tenantId, autoAssign: false, actor: { actorId: `employee:${employee.id}`, actorName: employee.name, actorRole: "employee" } });
+            lead = newLead;
+          } catch (e) {
+            console.error("Failed to auto-create lead in webhook", e);
+          }
+        }
+      }
+
       const leadId = lead?.id || callyzer.resolveLeadIdForLog(log, assignedLeads, phoneIndex);
       const mapped = callyzer.mapLogToCall(log, employee.id, leadId);
       try {

@@ -1,4 +1,5 @@
 const { logger } = require("../config/logger");
+const pool = require("../../config/db");
 
 const BASE_URL = (process.env.CALLYZER_API_BASE_URL || "https://api1.callyzer.co/api/v2.1").replace(/\/$/, "");
 const MIN_INTERVAL_MS = 2100;
@@ -521,6 +522,38 @@ async function getStatsForEmployee(employee, period = "today") {
   }
 }
 
+async function autoCreateLeadForPhone(tenantId, employeeId, phone, name) {
+  try {
+    const last10 = phone.replace(/\D/g, "").slice(-10);
+    const existing = await pool.query(
+      "SELECT id FROM leads WHERE tenant_id = $1 AND (phone = $2 OR (phone IS NOT NULL AND RIGHT(REPLACE(phone, '-', ''), 10) = $3)) AND is_deleted = 0 LIMIT 1",
+      [tenantId, phone, last10]
+    );
+    if (existing.rows.length > 0) {
+      return existing.rows[0].id;
+    }
+
+    const result = await pool.query(
+      `INSERT INTO leads (tenant_id, lead_name, phone, pipeline_stage, status, temperature, assigned_to, source, company_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id`,
+      [tenantId, name || "Unknown Lead", phone, "Contacted", "Contacted", "warm", employeeId, "Callyzer", "Callyzer Call"]
+    );
+    const newId = result.rows[0].id;
+
+    await pool.query(
+      `INSERT INTO lead_timeline_events (tenant_id, lead_id, type, actor_id, actor_name, actor_role, summary, payload)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [tenantId, newId, "lead_created", "system", "System", "system", `Lead created from Callyzer call with ${name || "Unknown Lead"}`, JSON.stringify({ source: "Callyzer" })]
+    );
+
+    return newId;
+  } catch (err) {
+    logger.error("Auto lead creation failed", { phone, message: err.message });
+    return null;
+  }
+}
+
 async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [], days = 30 } = {}) {
   if (!isConfigured() || !employee) return dbCalls;
 
@@ -537,12 +570,63 @@ async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [
     );
 
     const phoneIndex = buildLeadPhoneIndex(leads);
-    const callyzerCalls = logs
-      .filter((log) => log?.id && !dbCallyzerIds.has(log.id))
-      .map((log) => {
-        const leadId = resolveLeadIdForLog(log, leads, phoneIndex);
-        return mapLogToCall(log, employee.id, leadId);
-      });
+    const callyzerCalls = [];
+
+    for (const log of logs) {
+      if (!log?.id) continue;
+      
+      let leadId = resolveLeadIdForLog(log, leads, phoneIndex);
+      
+      if (!leadId) {
+        const clientPhone = normalizePhone(log.client_country_code, log.client_number).full || log.client_number;
+        const leadName = log.client_name || "Unknown Lead";
+        leadId = await autoCreateLeadForPhone(tenantId, employee.id, clientPhone, leadName);
+      }
+
+      if (!dbCallyzerIds.has(log.id)) {
+        const mapped = mapLogToCall(log, employee.id, leadId);
+        
+        try {
+          await pool.query(
+            `INSERT INTO employee_calls (
+               tenant_id, lead_id, employee_id, callyzer_call_id, direction, outcome,
+               duration_sec, started_at, ended_at, recording_url, notes, ai_summary
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+            [
+              tenantId,
+              leadId || null,
+              employee.id,
+              mapped.callyzerCallId || null,
+              mapped.direction || "outbound",
+              mapped.outcome || null,
+              mapped.durationSec || null,
+              mapped.startedAt || null,
+              mapped.endedAt || null,
+              mapped.recordingUrl || null,
+              mapped.notes || null,
+              mapped.aiSummary || null,
+            ]
+          );
+        } catch (e) {
+          logger.error("Failed to save synced call log", { callyzerCallId: mapped.callyzerCallId, message: e.message });
+        }
+        
+        callyzerCalls.push({ ...mapped, leadId });
+      } else {
+        const dbCall = dbCalls.find((c) => c.callyzerCallId === log.id);
+        if (dbCall && !dbCall.leadId && leadId) {
+          dbCall.leadId = leadId;
+          try {
+            await pool.query(
+              "UPDATE employee_calls SET lead_id = $1 WHERE tenant_id = $2 AND callyzer_call_id = $3",
+              [leadId, tenantId, log.id]
+            );
+          } catch (e) {
+            logger.error("Failed to update call leadId", { callyzerCallId: log.id, message: e.message });
+          }
+        }
+      }
+    }
 
     const merged = [...dbCalls, ...callyzerCalls].map((c) => attachLeadToCall(c, leads, phoneIndex));
     merged.sort((a, b) => {
