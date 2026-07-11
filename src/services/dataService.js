@@ -935,26 +935,85 @@ async function generateAiInsights(tenantId, context = "dashboard") {
 async function getIncentivesData(tenantId = TENANT, month) {
   const settingsRes = await getSettings(tenantId);
   const settings = settingsRes.settings || mock.DEFAULT_SETTINGS;
+  const targetMonth = month || new Date().toISOString().slice(0, 7);
 
   let teammates = [];
   if (await dbReady()) {
     try {
-      const empRes = await pool.query(
-        `SELECT id, name, email, role, department, call_target, qualified_lead_target, meeting_target, cash_target,
-          incentive_kra, call_weightage, qualified_lead_weightage, meeting_weightage, cash_weightage
-         FROM employees WHERE tenant_id = $1 AND status = 'active'`,
-        [tenantId],
-      );
+      const [empRes, callsRes, meetingsRes, leadsRes, cashRes] = await Promise.all([
+        pool.query(
+          `SELECT id, name, email, role, department, salary, call_target, qualified_lead_target, meeting_target, cash_target,
+            incentive_kra, call_weightage, qualified_lead_weightage, meeting_weightage, cash_weightage
+           FROM employees WHERE tenant_id = $1 AND status = 'active'`,
+          [tenantId],
+        ),
+        pool.query(
+          `SELECT employee_id, COUNT(*) AS total_calls
+           FROM employee_calls
+           WHERE tenant_id = $1 AND DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = $2
+           GROUP BY employee_id`,
+          [tenantId, targetMonth]
+        ),
+        pool.query(
+          `SELECT employee_id, COUNT(*) AS total_meetings
+           FROM meetings
+           WHERE tenant_id = $1 AND DATE_FORMAT(COALESCE(scheduled_at, created_at), '%Y-%m') = $2
+           GROUP BY employee_id`,
+          [tenantId, targetMonth]
+        ),
+        pool.query(
+          `SELECT assigned_to AS employee_id,
+             SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN
+                   ('qualified','call booked','proposal sent','negotiation',
+                    'converted','closed won','showed up','booked')
+                 OR   LOWER(COALESCE(status,''))  IN ('qualified','warm','booked')
+                 THEN 1 ELSE 0 END) AS qualified_leads
+           FROM leads
+           WHERE tenant_id = $1 AND is_deleted = 0
+             AND DATE_FORMAT(created_at, '%Y-%m') = $2
+           GROUP BY assigned_to`,
+          [tenantId, targetMonth]
+        ),
+        pool.query(
+          `SELECT employee_id, COALESCE(SUM(amount), 0) AS total_cash
+           FROM cash_collections
+           WHERE tenant_id = $1 AND DATE_FORMAT(COALESCE(payment_at, created_at), '%Y-%m') = $2
+           GROUP BY employee_id`,
+          [tenantId, targetMonth]
+        )
+      ]);
+
+      const callsMap = {};
+      callsRes.rows.forEach(r => { callsMap[r.employee_id] = Number(r.total_calls) || 0; });
+
+      const meetingsMap = {};
+      meetingsRes.rows.forEach(r => { meetingsMap[r.employee_id] = Number(r.total_meetings) || 0; });
+
+      const leadsMap = {};
+      leadsRes.rows.forEach(r => { leadsMap[r.employee_id] = Number(r.qualified_leads) || 0; });
+
+      const cashMap = {};
+      cashRes.rows.forEach(r => { cashMap[r.employee_id] = Number(r.total_cash) || 0; });
+
       teammates = empRes.rows.map((e) => ({
         id: e.id,
         name: e.name,
-        role: e.role,
-        department: e.department,
+        role: e.role || e.department || "Sales Manager",
+        department: e.department || "Sales & Growth",
+        salary: e.salary || 0,
+        callsCompleted: callsMap[e.id] || 0,
+        callsTarget: e.call_target || 50,
+        qualifiedLeads: leadsMap[e.id] || 0,
+        qualifiedTarget: e.qualified_lead_target || 20,
+        meetingsScheduled: meetingsMap[e.id] || 0,
+        meetingsTarget: e.meeting_target || 15,
+        cashCollected: cashMap[e.id] || 0,
+        cashTarget: e.cash_target || 100000,
         targets: {
-          calls: e.call_target || 0,
-          qualifiedLeads: e.qualified_lead_target || 0,
-          meetings: e.meeting_target || 0,
-          cash: e.cash_target || 0,
+          calls: e.call_target || 50,
+          qualifiedLeads: e.qualified_lead_target || 20,
+          meetings: e.meeting_target || 15,
+          cash: e.cash_target || 100000,
         },
         weightages: {
           calls: e.call_weightage || 0,
@@ -963,8 +1022,8 @@ async function getIncentivesData(tenantId = TENANT, month) {
           cash: e.cash_weightage || 0,
         },
       }));
-    } catch {
-      // use empty
+    } catch (err) {
+      console.error("Error fetching incentives teammates data:", err);
     }
   }
 
@@ -976,7 +1035,7 @@ async function getIncentivesData(tenantId = TENANT, month) {
     baseIncentiveRate: settings.baseIncentiveRate ?? 2.5,
     targetBonusAmount: settings.targetBonusAmount ?? 2500,
     teammates,
-    month: month || new Date().toISOString().slice(0, 7),
+    month: targetMonth,
   };
 }
 
