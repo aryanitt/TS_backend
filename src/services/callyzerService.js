@@ -320,10 +320,10 @@ function employeeMatchesWebhook(employee, payload) {
   return false;
 }
 
-async function fetchCallHistory({ empNumbers, days = 30, pageSize = 100 }) {
+async function fetchCallHistory({ empNumbers, days = 30, pageSize = 100, maxPages = 5 }) {
   if (!empNumbers?.length) return [];
 
-  const cacheKey = `${empNumbers.sort().join(",")}:${days}`;
+  const cacheKey = `${empNumbers.sort().join(",")}:${days}:${maxPages}`;
   const cached = historyCache.get(cacheKey);
   if (cached && Date.now() - cached.at < 120000) {
     return cached.logs;
@@ -336,7 +336,7 @@ async function fetchCallHistory({ empNumbers, days = 30, pageSize = 100 }) {
   let pageNo = 1;
   let totalRecords = Infinity;
 
-  while (allLogs.length < totalRecords && pageNo <= 5) {
+  while (allLogs.length < totalRecords && pageNo <= maxPages) {
     const response = await callyzerPost("/call-log/history", {
       call_from: callFrom,
       call_to: callTo,
@@ -554,7 +554,7 @@ async function autoCreateLeadForPhone(tenantId, employeeId, phone, name) {
   }
 }
 
-async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [], days = 30 } = {}) {
+async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [], days = 30, maxPages = 5 } = {}) {
   if (!isConfigured() || !employee) return dbCalls;
 
   const empNumbers = employeeEmpNumbers(employee);
@@ -564,7 +564,7 @@ async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [
   }
 
   try {
-    const logs = await fetchCallHistory({ empNumbers, days });
+    const logs = await fetchCallHistory({ empNumbers, days, maxPages });
     
     // Filter to ensure we only include call logs belonging to this employee
     const empNumbersDigits = empNumbers.map(n => digitsOnly(n).slice(-10));

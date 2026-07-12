@@ -26,7 +26,8 @@ async function run() {
       const calls = await callyzer.getCallsForEmployee("default", employee, {
         dbCalls,
         leads: leadsResult.items,
-        days: 30
+        days: 30,
+        maxPages: 30
       });
       
       console.log(`Successfully synced for ${employee.name}: retrieved ${calls.length} calls.`);
