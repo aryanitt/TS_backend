@@ -565,6 +565,29 @@ async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [
 
   try {
     const logs = await fetchCallHistory({ empNumbers, days });
+    
+    // Filter to ensure we only include call logs belonging to this employee
+    const empNumbersDigits = empNumbers.map(n => digitsOnly(n).slice(-10));
+    const filteredLogs = logs.filter((log) => {
+      const logEmpNum = digitsOnly(log.emp_number || "");
+      const logEmpCode = String(log.emp_code || "").trim();
+      
+      const callyser = String(employee.callyserId || employee.callyser_id || "").trim();
+      const empCode = String(employee.empCode || employee.emp_id || "").trim();
+      
+      if (callyser && logEmpCode && callyser === logEmpCode) return true;
+      if (empCode && logEmpCode && empCode === logEmpCode) return true;
+      
+      if (logEmpNum) {
+        const last10 = logEmpNum.slice(-10);
+        if (empNumbersDigits.includes(last10)) return true;
+        if (employee.phone && digitsOnly(employee.phone).slice(-10) === last10) return true;
+      }
+      
+      if (!logEmpNum && !logEmpCode) return true;
+      return false;
+    });
+
     const dbCallyzerIds = new Set(
       dbCalls.map((c) => c.callyzerCallId).filter(Boolean),
     );
@@ -572,8 +595,7 @@ async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [
     const phoneIndex = buildLeadPhoneIndex(leads);
     const callyzerCalls = [];
 
-    for (const log of logs) {
-      if (!log?.id) continue;
+    for (const log of filteredLogs) {
       
       let leadId = resolveLeadIdForLog(log, leads, phoneIndex);
       
@@ -614,15 +636,27 @@ async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [
         callyzerCalls.push({ ...mapped, leadId });
       } else {
         const dbCall = dbCalls.find((c) => c.callyzerCallId === log.id);
-        if (dbCall && !dbCall.leadId && leadId) {
-          dbCall.leadId = leadId;
-          try {
-            await pool.query(
-              "UPDATE employee_calls SET lead_id = $1 WHERE tenant_id = $2 AND callyzer_call_id = $3",
-              [leadId, tenantId, log.id]
-            );
-          } catch (e) {
-            logger.error("Failed to update call leadId", { callyzerCallId: log.id, message: e.message });
+        if (dbCall) {
+          if (!dbCall.leadId && leadId) {
+            dbCall.leadId = leadId;
+            try {
+              await pool.query(
+                "UPDATE employee_calls SET lead_id = $1 WHERE tenant_id = $2 AND callyzer_call_id = $3",
+                [leadId, tenantId, log.id]
+              );
+            } catch (e) {
+              logger.error("Failed to update call leadId", { callyzerCallId: log.id, message: e.message });
+            }
+          }
+          if (!dbCall.clientPhone || !dbCall.clientName) {
+            const matchedLead = leads.find((l) => String(l.id) === String(leadId));
+            if (matchedLead) {
+              dbCall.clientPhone = matchedLead.phone || matchedLead.clientPhone || null;
+              dbCall.clientName = matchedLead.leadName || matchedLead.name || null;
+            } else {
+              dbCall.clientPhone = normalizePhone(log.client_country_code, log.client_number).full || log.client_number;
+              dbCall.clientName = log.client_name || "Unknown Lead";
+            }
           }
         }
       }

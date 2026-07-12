@@ -236,6 +236,9 @@ function mapCall(row) {
     notes: row.notes,
     aiSummary: row.ai_summary,
     createdAt: toLocalSqlString(row.created_at),
+    clientName: row.client_name || null,
+    clientPhone: row.client_phone || null,
+    clientCompany: row.client_company || null,
   });
 }
 
@@ -1028,7 +1031,11 @@ async function insertCall(data) {
 
 async function listCalls(tenantId, employeeId) {
   const result = await pool.query(
-    `SELECT * FROM employee_calls WHERE tenant_id = $1 AND employee_id = $2 ORDER BY created_at DESC`,
+    `SELECT ec.*, l.lead_name AS client_name, l.phone AS client_phone, l.company_name AS client_company
+     FROM employee_calls ec
+     LEFT JOIN leads l ON ec.lead_id = l.id
+     WHERE ec.tenant_id = $1 AND ec.employee_id = $2
+     ORDER BY ec.created_at DESC`,
     [tenantId, employeeId],
   );
   return result.rows.map(mapCall);
@@ -1036,7 +1043,10 @@ async function listCalls(tenantId, employeeId) {
 
 async function findCallByCallyzerId(tenantId, callyzerCallId) {
   const result = await pool.query(
-    `SELECT * FROM employee_calls WHERE tenant_id = $1 AND callyzer_call_id = $2 LIMIT 1`,
+    `SELECT ec.*, l.lead_name AS client_name, l.phone AS client_phone, l.company_name AS client_company
+     FROM employee_calls ec
+     LEFT JOIN leads l ON ec.lead_id = l.id
+     WHERE ec.tenant_id = $1 AND ec.callyzer_call_id = $2 LIMIT 1`,
     [tenantId, callyzerCallId],
   );
   return mapCall(result.rows[0]);
