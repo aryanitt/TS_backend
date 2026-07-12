@@ -3,6 +3,16 @@ const mock = require("../data/mockFallback");
 
 const TENANT = "default";
 
+const CONVERTED_LEAD_SQL = `
+  LOWER(COALESCE(pipeline_stage, '')) IN ('converted', 'won', 'closed won')
+  OR LOWER(COALESCE(status, '')) IN ('converted', 'won')
+`;
+
+const CONVERTED_LEAD_SQL_ALIASED = `
+  LOWER(COALESCE(l.pipeline_stage, '')) IN ('converted', 'won', 'closed won')
+  OR LOWER(COALESCE(l.status, '')) IN ('converted', 'won')
+`;
+
 function formatINR(amount) {
   const n = Number(amount) || 0;
   if (n >= 10000000) return `₹${(n / 10000000).toFixed(1)}Cr`;
@@ -14,13 +24,16 @@ function formatINR(amount) {
 function rangeToDates(rangeKey) {
   const now = new Date();
   const end = new Date(now);
+  end.setHours(23, 59, 59, 999);
   let start = new Date(now);
   if (rangeKey === "today") {
     start.setHours(0, 0, 0, 0);
   } else if (rangeKey === "week") {
-    start.setDate(start.getDate() - 7);
+    start.setDate(start.getDate() - start.getDay());
+    start.setHours(0, 0, 0, 0);
   } else if (rangeKey === "month") {
-    start.setMonth(start.getMonth() - 1);
+    start = new Date(now.getFullYear(), now.getMonth(), 1);
+    start.setHours(0, 0, 0, 0);
   } else {
     start = null;
   }
@@ -59,27 +72,39 @@ function normalizeLeadText(value) {
 }
 
 function mapLeadToPipelineColumn(row) {
-  const pipeline = mapStageToPipeline(row.pipeline_stage || row.status);
-  const status = normalizeLeadText(row.status);
+  const stageRaw = String(row.pipeline_stage || row.status || "new").toLowerCase().trim();
 
-  if (pipeline === "closed_won" || ["converted", "won", "closed"].includes(status)) {
-    return "Conversion";
+  let stage = "new";
+  const STAGE_MAP = [
+    ["closed won", "closed_won"],
+    ["converted", "closed_won"],
+    ["won", "closed_won"],
+    ["not interested", "not_interested"],
+    ["not_interested", "not_interested"],
+    ["ni", "not_interested"],
+    ["negotiation", "negotiation"],
+    ["proposal", "proposal"],
+    ["qualified", "qualified"],
+    ["contacted", "contacted"],
+    ["new", "new"],
+  ];
+  for (const [needle, id] of STAGE_MAP) {
+    if (stageRaw.includes(needle)) {
+      stage = id;
+      break;
+    }
   }
-  if (pipeline === "negotiation" || status.includes("negotiat")) {
-    return "Negotiation";
+
+  if (stage === "new" || stage === "not_interested") {
+    return null;
   }
-  if (pipeline === "proposal" || status.includes("meeting") || status.includes("proposal")) {
-    return "Meeting";
-  }
-  if (
-    pipeline === "qualified" ||
-    status.includes("qualif") ||
-    status.includes("warm lead") ||
-    status.includes("hot lead")
-  ) {
-    return "Qualified";
-  }
-  return "Contacted";
+  if (stage === "closed_won") return "Conversion";
+  if (stage === "negotiation") return "Negotiation";
+  if (stage === "proposal") return "Meeting";
+  if (stage === "qualified") return "Qualified";
+  if (stage === "contacted") return "Contacted";
+
+  return null;
 }
 
 function mapLeadToTemperature(row) {
@@ -102,6 +127,7 @@ function buildPipelineStatusGrid(rows) {
 
   rows.forEach((row) => {
     const col = mapLeadToPipelineColumn(row);
+    if (!col) return;
     const temp = mapLeadToTemperature(row);
     grid[temp][col] += 1;
   });
@@ -116,7 +142,7 @@ function buildPipelineStatusGrid(rows) {
     tempTotals[t] = stages.reduce((acc, s) => acc + grid[t][s], 0);
   });
 
-  const totalLeads = rows.length;
+  const totalLeads = Object.values(tempTotals).reduce((a, b) => a + b, 0);
   const conversions = stageTotals.Conversion || 0;
   const overallConv = totalLeads > 0 ? Math.round((conversions / totalLeads) * 100) : 0;
 
@@ -131,24 +157,20 @@ function buildPipelineStatusGrid(rows) {
   };
 }
 
-async function queryPipelineLeadRows(tenantId, rangeKey = "week", service = "All Services") {
-  const { start, end } = rangeToDates(rangeKey);
+async function queryPipelineLeadRows(tenantId, rangeKey = "week", service = "All Services", employee = "All Employees") {
   const params = [tenantId];
   let where = "l.tenant_id = $1 AND l.is_deleted = 0";
-
-  if (start) {
-    params.push(start);
-    where += ` AND l.created_at >= $${params.length}`;
-  }
-  if (end && rangeKey === "today") {
-    params.push(end);
-    where += ` AND l.created_at <= $${params.length}`;
-  }
 
   if (service && service !== "All Services") {
     params.push(`%${service}%`);
     const idx = params.length;
     where += ` AND (l.form_name LIKE $${idx} OR l.keyword LIKE $${idx} OR l.source LIKE $${idx})`;
+  }
+
+  if (employee && employee !== "All Employees") {
+    params.push(employee);
+    const idx = params.length;
+    where += ` AND l.assigned_to = (SELECT id FROM employees WHERE name = $${idx} LIMIT 1)`;
   }
 
   const result = await pool.query(
@@ -160,17 +182,12 @@ async function queryPipelineLeadRows(tenantId, rangeKey = "week", service = "All
 
   if (result.rows.length) return result.rows;
 
-  const legacyParams = [];
   let legacyWhere = "1=1";
-  if (start) {
-    legacyParams.push(start);
-    legacyWhere += ` AND submitted_time >= $${legacyParams.length}`;
+  const legacyParams = [];
+  if (employee && employee !== "All Employees") {
+    legacyParams.push(employee);
+    legacyWhere += ` AND employee_name = $1`;
   }
-  if (end && rangeKey === "today") {
-    legacyParams.push(end);
-    legacyWhere += ` AND submitted_time <= $${legacyParams.length}`;
-  }
-
   const legacy = await pool.query(
     `SELECT pipeline_stage, status, temperature, NULL AS priority, form_name
      FROM emp_leads
@@ -181,15 +198,42 @@ async function queryPipelineLeadRows(tenantId, rangeKey = "week", service = "All
 }
 
 async function getPipelineStatusGrid(tenantId = TENANT, options = {}) {
-  const { rangeKey = "week", service = "All Services" } = options;
+  const { rangeKey = "week", service = "All Services", employee = "All Employees" } = options;
   const emptyGrid = buildPipelineStatusGrid([]);
 
   if (!(await dbReady())) {
-    return { success: true, source: "mock", ...emptyGrid };
+    const empLower = String(employee || "").toLowerCase();
+    if (empLower.includes("aryan")) {
+      return { success: true, source: "mock", ...emptyGrid };
+    }
+    if (empLower.includes("ritik")) {
+      const ritikGrid = buildPipelineStatusGrid([
+        { pipeline_stage: "New", status: "New", temperature: "Warm Lead", form_name: "AI Automation Suite" }
+      ]);
+      return { success: true, source: "mock", ...ritikGrid };
+    }
+    const allMockLeads = [
+      { pipeline_stage: "New", status: "New", temperature: "Hot Lead" },
+      { pipeline_stage: "New", status: "New", temperature: "Warm Lead" },
+      { pipeline_stage: "New", status: "New", temperature: "Warm Lead" },
+      { pipeline_stage: "New", status: "New", temperature: "Cold Lead" },
+      { pipeline_stage: "New", status: "New", temperature: "Cold Lead" },
+      { pipeline_stage: "New", status: "New", temperature: "Cold Lead" },
+      { pipeline_stage: "New", status: "New", temperature: "Cold Lead" },
+      { pipeline_stage: "Contacted", status: "Contacted", temperature: "Warm Lead" },
+      { pipeline_stage: "Contacted", status: "Contacted", temperature: "Cold Lead" },
+      { pipeline_stage: "Qualified", status: "Qualified", temperature: "Warm Lead" },
+      { pipeline_stage: "Qualified", status: "Qualified", temperature: "Cold Lead" },
+      { pipeline_stage: "Negotiation", status: "Negotiation", temperature: "Warm Lead" },
+      { pipeline_stage: "Converted", status: "Converted", temperature: "Warm Lead" },
+      { pipeline_stage: "Converted", status: "Converted", temperature: "Warm Lead" }
+    ];
+    const allGrid = buildPipelineStatusGrid(allMockLeads);
+    return { success: true, source: "mock", ...allGrid };
   }
 
   try {
-    const rows = await queryPipelineLeadRows(tenantId, rangeKey, service);
+    const rows = await queryPipelineLeadRows(tenantId, rangeKey, service, employee);
     const built = buildPipelineStatusGrid(rows);
     return {
       success: true,
@@ -211,39 +255,46 @@ async function dbReady() {
   }
 }
 
-async function queryLeadsStats(tenantId, rangeKey) {
-  const { start, end } = rangeToDates(rangeKey);
-  const params = [tenantId];
-  let dateFilter = "";
-  if (start) {
-    params.push(start);
-    dateFilter += ` AND created_at >= $${params.length}`;
-  }
-  if (end && rangeKey === "today") {
-    params.push(end);
-    dateFilter += ` AND created_at <= $${params.length}`;
-  }
+async function queryLeadsStats(tenantId) {
+  const [result, cashResult, callsResult] = await Promise.all([
+    pool.query(
+      `SELECT
+        COUNT(*) AS total_leads,
+        COALESCE(SUM(expected_revenue), 0) AS pipeline_value,
+        SUM(CASE WHEN pipeline_stage IN ('Qualified','Call Booked','Proposal Sent','Negotiation','Converted')
+          OR status IN ('Qualified','Call Booked','Proposal Sent','Negotiation','Converted') THEN 1 ELSE 0 END) AS qualified,
+        SUM(CASE WHEN ${CONVERTED_LEAD_SQL} THEN 1 ELSE 0 END) AS conversions,
+        COALESCE(SUM(CASE WHEN ${CONVERTED_LEAD_SQL} THEN expected_revenue ELSE 0 END), 0) AS revenue
+       FROM leads
+       WHERE tenant_id = $1 AND is_deleted = 0`,
+      [tenantId],
+    ),
+    pool.query(
+      `SELECT COALESCE(SUM(amount), 0) AS cash_collected
+       FROM cash_collections
+       WHERE tenant_id = $1`,
+      [tenantId],
+    ),
+    pool.query(
+      `SELECT COUNT(*) AS total_calls
+       FROM employee_calls
+       WHERE tenant_id = $1`,
+      [tenantId],
+    )
+  ]);
 
-  const result = await pool.query(
-    `SELECT
-      COUNT(*) AS total_leads,
-      COALESCE(SUM(expected_revenue), 0) AS pipeline_value,
-      SUM(CASE WHEN pipeline_stage IN ('Qualified','Call Booked','Proposal Sent','Negotiation','Converted') OR status IN ('Qualified','Call Booked','Proposal Sent','Negotiation','Converted') THEN 1 ELSE 0 END) AS qualified,
-      SUM(CASE WHEN pipeline_stage = 'Converted' OR status = 'Converted' THEN 1 ELSE 0 END) AS conversions,
-      COALESCE(SUM(CASE WHEN pipeline_stage = 'Converted' OR status = 'Converted' THEN expected_revenue ELSE 0 END), 0) AS revenue
-     FROM leads
-     WHERE tenant_id = $1 AND is_deleted = 0 ${dateFilter}`,
-    params,
-  );
-  return result.rows[0] || {};
+  const row = result.rows[0] || {};
+  row.cash_collected = cashResult.rows[0]?.cash_collected || 0;
+  row.total_calls = callsResult.rows[0]?.total_calls || 0;
+  return row;
 }
 
 async function queryLeaderboard(tenantId, rangeKey, limit = 3) {
   const result = await pool.query(
     `SELECT e.name, e.id,
       COUNT(l.id) AS leads,
-      SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN 1 ELSE 0 END) AS conv,
-      COALESCE(SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN l.expected_revenue ELSE 0 END), 0) AS rev
+      SUM(CASE WHEN ${CONVERTED_LEAD_SQL_ALIASED} THEN 1 ELSE 0 END) AS conv,
+      COALESCE(SUM(CASE WHEN ${CONVERTED_LEAD_SQL_ALIASED} THEN l.expected_revenue ELSE 0 END), 0) AS rev
      FROM employees e
      LEFT JOIN leads l ON l.assigned_to = e.id AND l.is_deleted = 0 AND l.tenant_id = $1
      WHERE e.tenant_id = $1 AND (LOWER(COALESCE(e.status, 'active')) = 'active')
@@ -277,36 +328,44 @@ async function queryLeaderboard(tenantId, rangeKey, limit = 3) {
 }
 
 async function buildFilterDataFromDb(tenantId) {
-  const ranges = ["today", "week", "month"];
-  const filterData = {};
-  for (const range of ranges) {
-    const stats = await queryLeadsStats(tenantId, range);
-    const total = Number(stats.total_leads) || 0;
-    const qualified = Number(stats.qualified) || 0;
-    const conversions = Number(stats.conversions) || 0;
-    const revenue = Number(stats.revenue) || 0;
-    const pipeline = Number(stats.pipeline_value) || 0;
-    const convRate = total ? Math.round((conversions / total) * 100) : 0;
+  const [stats, leaderboard] = await Promise.all([
+    queryLeadsStats(tenantId),
+    queryLeaderboard(tenantId, "all"),
+  ]);
 
-    filterData[range] = {
-      kpis: [
-        { label: "Revenue", value: formatINR(revenue), icon: "DollarSign" },
-        { label: "Cash Collected", value: formatINR(revenue * 0.65), icon: "Users" },
-        { label: "Conversion Rate", value: `${convRate}%`, icon: "Activity" },
-        { label: "Qualified Leads", value: String(qualified), icon: "FileText" },
-        { label: "Pipeline Value", value: formatINR(pipeline), icon: "DollarSign" },
-      ],
-      leaderboard: await queryLeaderboard(tenantId, range),
-      metrics: {
-        pickup: Math.min(95, 60 + Math.round(total / 10)),
-        qualification: total ? Math.round((qualified / total) * 100) : 0,
-        conversion: convRate,
-      },
-      insights: [],
-      activity: [],
-    };
-  }
-  return filterData;
+  const total = Number(stats.total_leads) || 0;
+  const qualified = Number(stats.qualified) || 0;
+  const conversions = Number(stats.conversions) || 0;
+  const revenue = Number(stats.revenue) || 0;
+  const pipeline = Number(stats.pipeline_value) || 0;
+  const cashCollected = Number(stats.cash_collected) || 0;
+  const convRate = total ? Math.round((conversions / total) * 100) : 0;
+
+  const rangeData = {
+    kpis: [
+      { label: "Total Revenue", value: formatINR(revenue), icon: "DollarSign" },
+      { label: "Cash Collected", value: formatINR(cashCollected), icon: "DollarSign" },
+      { label: "Total Leads", value: String(total), icon: "Users" },
+      { label: "Total Calls Made", value: String(stats.total_calls || 0), icon: "Phone" },
+      { label: "Qualified Leads", value: String(qualified), icon: "FileText" },
+      { label: "Pipeline Value", value: formatINR(pipeline), icon: "DollarSign" },
+      { label: "Closings", value: String(conversions), icon: "Trophy" },
+    ],
+    leaderboard: leaderboard,
+    metrics: {
+      pickup: Math.min(95, 60 + Math.round(total / 10)),
+      qualification: total ? Math.round((qualified / total) * 100) : 0,
+      conversion: convRate,
+    },
+    insights: [],
+    activity: [],
+  };
+
+  return {
+    today: rangeData,
+    week: rangeData,
+    month: rangeData,
+  };
 }
 
 async function getAiInsightsFromDb(tenantId, context = "dashboard") {
@@ -330,70 +389,111 @@ async function getActivityFromDb(limit = 10) {
   }));
 }
 
+function emptyFilterRange() {
+  return {
+    kpis: [
+      { label: "Total Revenue", value: "₹0", icon: "DollarSign" },
+      { label: "Cash Collected", value: "₹0", icon: "DollarSign" },
+      { label: "Total Leads", value: "0", icon: "Users" },
+      { label: "Total Calls Made", value: "0", icon: "Phone" },
+      { label: "Qualified Leads", value: "0", icon: "FileText" },
+      { label: "Pipeline Value", value: "₹0", icon: "DollarSign" },
+      { label: "Closings", value: "0", icon: "Trophy" },
+    ],
+    leaderboard: [],
+    metrics: { pickup: 0, qualification: 0, conversion: 0 },
+    insights: [],
+    activity: [],
+  };
+}
+
+function emptyFilterData() {
+  return {
+    today: emptyFilterRange(),
+    week: emptyFilterRange(),
+    month: emptyFilterRange(),
+  };
+}
+
 async function getDashboardBundle(tenantId = TENANT) {
+  const empty = emptyFilterData();
+
   if (!(await dbReady())) {
-    return { source: "mock", filterData: mock.FILTER_DATA, revenueSeries: mock.revenueSeries, aiInsights: mock.aiInsights };
+    const mockRange = {
+      kpis: [
+        { label: "Total Revenue",     value: "₹20.0L", icon: "DollarSign", trendVal: "+14.2%", sub: "MoM Gross ..." },
+        { label: "Cash Collected",    value: "₹14.3L", icon: "DollarSign", trendVal: "+18.4%", sub: "Cash Genera..." },
+        { label: "Total Leads",       value: "14",      icon: "Users",      trendVal: "+8.5%",  sub: "New Leads" },
+        { label: "Total Calls Made",  value: "30",      icon: "Phone",      trendVal: "+12.4%", sub: "Call Volume" },
+        { label: "Qualified Leads",   value: "4",       icon: "FileText",   trendVal: "+6.2%",  sub: "Qualified" },
+        { label: "Pipeline Value",    value: "₹91.3L",  icon: "DollarSign", trendVal: "+4.2%",  sub: "Target vs Ach..." },
+        { label: "Closings",          value: "2",       icon: "Trophy",     trendVal: "+10.5%", sub: "Closed Won" },
+      ],
+      leaderboard: [
+        { name: "Sourav",      leads: 13, resp: "2h 10m", qualR: "31%", convR: "15%", conv: 2, rev: "₹20.0L" },
+        { name: "Ritik Verma", leads: 1,  resp: "3h 40m", qualR: "0%",  convR: "0%",  conv: 0, rev: "₹0" },
+        { name: "Aryan",       leads: 0,  resp: "—",      qualR: "0%",  convR: "0%",  conv: 0, rev: "₹0" },
+      ],
+      metrics: { pickup: 78, qualification: 29, conversion: 15 },
+      insights: [
+        { type: "check", title: "2 deals closed this period", body: "Sourav converted 2 warm leads successfully." },
+        { type: "warn",  title: "1 lead needs follow-up", body: "Ritik's warm lead has not been contacted yet." },
+      ],
+      activity: [
+        { type: "check", text: "Sourav converted 2 deals this week" },
+        { type: "check", text: "Ritik assigned 1 warm lead" },
+        { type: "warn",  text: "Aryan has no active leads" },
+      ],
+    };
+    return {
+      source: "mock",
+      filterData: { today: mockRange, week: mockRange, month: mockRange },
+      revenueSeries: mock.revenueSeries || [],
+      aiInsights: mock.aiInsights || [],
+      success: true,
+    };
   }
 
   try {
-    const leadCount = await pool.query(
-      `SELECT COUNT(*) AS c FROM leads WHERE tenant_id = $1 AND is_deleted = 0`,
-      [tenantId],
-    );
-    const hasLeads = Number(leadCount.rows[0]?.c) > 0;
+    const [filterData, dbInsights, activity, revenueResult] = await Promise.all([
+      buildFilterDataFromDb(tenantId),
+      getAiInsightsFromDb(tenantId, "dashboard"),
+      getActivityFromDb(8),
+      pool.query(
+        `SELECT DATE_FORMAT(created_at, '%b') AS month,
+          COALESCE(SUM(CASE WHEN pipeline_stage = 'Converted' OR status = 'Converted' THEN expected_revenue ELSE 0 END), 0) AS revenue
+         FROM leads WHERE tenant_id = $1 AND is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+         GROUP BY DATE_FORMAT(created_at, '%Y-%m'), DATE_FORMAT(created_at, '%b')
+         ORDER BY DATE_FORMAT(created_at, '%Y-%m')`,
+        [tenantId],
+      )
+    ]);
 
-    let filterData = mock.FILTER_DATA;
-    let source = "mock";
-
-    if (hasLeads) {
-      const dbFilter = await buildFilterDataFromDb(tenantId);
-      const mergeRange = (rangeKey) => ({
-        ...mock.FILTER_DATA[rangeKey],
-        ...dbFilter[rangeKey],
-        kpis: dbFilter[rangeKey]?.kpis?.length ? dbFilter[rangeKey].kpis : mock.FILTER_DATA[rangeKey].kpis,
-        leaderboard: dbFilter[rangeKey]?.leaderboard?.length
-          ? dbFilter[rangeKey].leaderboard
-          : mock.FILTER_DATA[rangeKey].leaderboard,
-        metrics: dbFilter[rangeKey]?.metrics || mock.FILTER_DATA[rangeKey].metrics,
-        insights: mock.FILTER_DATA[rangeKey].insights,
-      });
-      filterData = {
-        today: mergeRange("today"),
-        week: mergeRange("week"),
-        month: mergeRange("month"),
-      };
-      source = "merged";
-    }
-
-    const dbInsights = await getAiInsightsFromDb(tenantId, "dashboard");
-    const aiInsights = dbInsights.length ? dbInsights : mock.aiInsights;
-
-    const activity = await getActivityFromDb(6);
-    if (activity.length && filterData.week) {
-      filterData.week.activity = activity.length >= 2 ? activity : filterData.week.activity;
-    }
-
-    const revenueResult = await pool.query(
-      `SELECT DATE_FORMAT(created_at, '%b') AS month,
-        COALESCE(SUM(CASE WHEN pipeline_stage = 'Converted' OR status = 'Converted' THEN expected_revenue ELSE 0 END), 0) AS revenue
-       FROM leads WHERE tenant_id = $1 AND is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
-       GROUP BY DATE_FORMAT(created_at, '%Y-%m'), DATE_FORMAT(created_at, '%b')
-       ORDER BY DATE_FORMAT(created_at, '%Y-%m')`,
-      [tenantId],
-    );
-
-    const revenueSeries = revenueResult.rows.length
-      ? revenueResult.rows.map((r, i) => ({
-          month: r.month,
-          revenue: Math.round(Number(r.revenue) / 10000) || mock.revenueSeries[i]?.revenue || 0,
-          forecast: Math.round((Number(r.revenue) / 10000) * 0.9) || mock.revenueSeries[i]?.forecast || 0,
+    const aiInsights = dbInsights.length
+      ? dbInsights.map((row) => ({
+          type: row.tone || row.type || "check",
+          title: row.title || "Insight",
+          body: row.body || "",
+          tone: row.tone || row.type || "check",
         }))
-      : mock.revenueSeries;
+      : [];
 
-    return { source, filterData, revenueSeries, aiInsights, success: true };
+    if (activity.length) {
+      for (const key of ["today", "week", "month"]) {
+        if (filterData[key]) filterData[key].activity = activity;
+      }
+    }
+
+    const revenueSeries = revenueResult.rows.map((r) => ({
+      month: r.month,
+      revenue: Math.round(Number(r.revenue) / 10000) || 0,
+      forecast: Math.round((Number(r.revenue) / 10000) * 0.9) || 0,
+    }));
+
+    return { source: "database", filterData, revenueSeries, aiInsights, success: true };
   } catch (err) {
     console.error("getDashboardBundle error:", err.message);
-    return { source: "mock", filterData: mock.FILTER_DATA, revenueSeries: mock.revenueSeries, aiInsights: mock.aiInsights, success: true };
+    return { source: "error", filterData: empty, revenueSeries: [], aiInsights: mock.aiInsights, success: true };
   }
 }
 
@@ -835,36 +935,128 @@ async function generateAiInsights(tenantId, context = "dashboard") {
 async function getIncentivesData(tenantId = TENANT, month) {
   const settingsRes = await getSettings(tenantId);
   const settings = settingsRes.settings || mock.DEFAULT_SETTINGS;
+  const targetMonth = month || new Date().toISOString().slice(0, 7);
 
   let teammates = [];
   if (await dbReady()) {
     try {
-      const empRes = await pool.query(
-        `SELECT id, name, email, role, department, call_target, qualified_lead_target, meeting_target, cash_target,
-          incentive_kra, call_weightage, qualified_lead_weightage, meeting_weightage, cash_weightage
-         FROM employees WHERE tenant_id = $1 AND status = 'active'`,
-        [tenantId],
-      );
-      teammates = empRes.rows.map((e) => ({
-        id: e.id,
-        name: e.name,
-        role: e.role,
-        department: e.department,
-        targets: {
-          calls: e.call_target || 0,
-          qualifiedLeads: e.qualified_lead_target || 0,
-          meetings: e.meeting_target || 0,
-          cash: e.cash_target || 0,
-        },
-        weightages: {
-          calls: e.call_weightage || 0,
-          qualifiedLeads: e.qualified_lead_weightage || 0,
-          meetings: e.meeting_weightage || 0,
-          cash: e.cash_weightage || 0,
-        },
-      }));
-    } catch {
-      // use empty
+      const [empRes, callsRes, meetingsRes, leadsRes, cashRes] = await Promise.all([
+        pool.query(
+          `SELECT id, name, email, role, department, salary, call_target, qualified_lead_target, meeting_target, cash_target,
+            incentive_kra, call_weightage, qualified_lead_weightage, meeting_weightage, cash_weightage
+           FROM employees WHERE tenant_id = $1 AND status = 'active'`,
+          [tenantId],
+        ),
+        pool.query(
+          `SELECT employee_id, COUNT(*) AS total_calls,
+             SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END) AS connected_calls
+           FROM employee_calls
+           WHERE tenant_id = $1 AND DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = $2
+           GROUP BY employee_id`,
+          [tenantId, targetMonth]
+        ),
+        pool.query(
+          `SELECT employee_id, COUNT(*) AS total_meetings
+           FROM meetings
+           WHERE tenant_id = $1 AND DATE_FORMAT(COALESCE(scheduled_at, created_at), '%Y-%m') = $2
+           GROUP BY employee_id`,
+          [tenantId, targetMonth]
+        ),
+        pool.query(
+          `SELECT assigned_to AS employee_id,
+             COUNT(*) AS total_leads,
+             SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN
+                   ('qualified','call booked','proposal sent','negotiation',
+                    'converted','closed won','showed up','booked')
+                 OR   LOWER(COALESCE(status,''))  IN ('qualified','warm','booked')
+                 THEN 1 ELSE 0 END) AS qualified_leads,
+             SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('converted','won','closed won')
+                 OR   LOWER(COALESCE(status,''))  IN ('converted','won')
+                 THEN 1 ELSE 0 END) AS converted_leads
+           FROM leads
+           WHERE tenant_id = $1 AND is_deleted = 0
+             AND DATE_FORMAT(created_at, '%Y-%m') = $2
+           GROUP BY assigned_to`,
+          [tenantId, targetMonth]
+        ),
+        pool.query(
+          `SELECT employee_id, COALESCE(SUM(amount), 0) AS total_cash
+           FROM cash_collections
+           WHERE tenant_id = $1 AND DATE_FORMAT(COALESCE(payment_at, created_at), '%Y-%m') = $2
+           GROUP BY employee_id`,
+          [tenantId, targetMonth]
+        )
+      ]);
+
+      const callsMap = {};
+      callsRes.rows.forEach(r => {
+        callsMap[r.employee_id] = {
+          total: Number(r.total_calls) || 0,
+          connected: Number(r.connected_calls) || 0
+        };
+      });
+
+      const meetingsMap = {};
+      meetingsRes.rows.forEach(r => { meetingsMap[r.employee_id] = Number(r.total_meetings) || 0; });
+
+      const leadsMap = {};
+      leadsRes.rows.forEach(r => {
+        leadsMap[r.employee_id] = {
+          total: Number(r.total_leads) || 0,
+          qualified: Number(r.qualified_leads) || 0,
+          converted: Number(r.converted_leads) || 0
+        };
+      });
+
+      const cashMap = {};
+      cashRes.rows.forEach(r => { cashMap[r.employee_id] = Number(r.total_cash) || 0; });
+
+      teammates = empRes.rows.map((e) => {
+        const empCalls = callsMap[e.id] || { total: 0, connected: 0 };
+        const empLeads = leadsMap[e.id] || { total: 0, qualified: 0, converted: 0 };
+
+        const pickupRate = empCalls.total > 0 ? Math.min(100, Math.round((empCalls.connected / empCalls.total) * 100)) : 0;
+        const qualificationRate = empLeads.total > 0 ? Math.min(100, Math.round((empLeads.qualified / empLeads.total) * 100)) : 0;
+        const conversionRate = empLeads.total > 0 ? Math.min(100, Math.round((empLeads.converted / empLeads.total) * 100)) : 0;
+        const objectionHandling = Math.min(99, Math.round(qualificationRate * 0.95) || 0);
+        const followUpQuality = pickupRate;
+
+        return {
+          id: e.id,
+          name: e.name,
+          role: e.role || e.department || "Sales Manager",
+          department: e.department || "Sales & Growth",
+          salary: e.salary || 0,
+          callsCompleted: empCalls.total,
+          callsTarget: e.call_target || 50,
+          qualifiedLeads: empLeads.qualified,
+          qualifiedTarget: e.qualified_lead_target || 20,
+          meetingsScheduled: meetingsMap[e.id] || 0,
+          meetingsTarget: e.meeting_target || 15,
+          cashCollected: cashMap[e.id] || 0,
+          cashTarget: e.cash_target || 100000,
+          responseTimeMin: 1.8,
+          pickupRate,
+          qualificationRate,
+          objectionHandling,
+          conversionRate,
+          followUpQuality,
+          targets: {
+            calls: e.call_target || 50,
+            qualifiedLeads: e.qualified_lead_target || 20,
+            meetings: e.meeting_target || 15,
+            cash: e.cash_target || 100000,
+          },
+          weightages: {
+            calls: e.call_weightage || 0,
+            qualifiedLeads: e.qualified_lead_weightage || 0,
+            meetings: e.meeting_weightage || 0,
+            cash: e.cash_weightage || 0,
+          },
+        };
+      });
+    } catch (err) {
+      console.error("Error fetching incentives teammates data:", err);
     }
   }
 
@@ -876,8 +1068,190 @@ async function getIncentivesData(tenantId = TENANT, month) {
     baseIncentiveRate: settings.baseIncentiveRate ?? 2.5,
     targetBonusAmount: settings.targetBonusAmount ?? 2500,
     teammates,
-    month: month || new Date().toISOString().slice(0, 7),
+    month: targetMonth,
   };
+}
+
+async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
+  const { employee = "All Employees", service = "All Services" } = options;
+
+  // If DB not available, return empty zeros — no mock data
+  if (!(await dbReady())) {
+    const emptyMetrics = [
+      { label: "Pickup Rate",        shortLabel: "Pickup",   value: 0, rgb: "124,58,237",  desc: "Calls answered vs dialed",       trend: "—" },
+      { label: "Qualification Rate", shortLabel: "Qualify",  value: 0, rgb: "220,38,120",  desc: "Qualified vs total leads",        trend: "—" },
+      { label: "Conversion Rate",    shortLabel: "Convert",  value: 0, rgb: "16,185,129",  desc: "Closed deals vs total leads",     trend: "—" },
+    ];
+    return {
+      success: true,
+      source: "offline",
+      kpiData: [
+        { label: "Leads Assigned",  value: "0"  },
+        { label: "Calls Done",      value: "0"  },
+        { label: "Qualified Leads", value: "0"  },
+        { label: "Meetings Done",   value: "0"  },
+        { label: "Proposal Sent",   value: "0"  },
+        { label: "Revenue",         value: "₹0" },
+      ],
+      oppData: { notContacted: 0, unqualified: 0, noMeeting: 0, stuckNegotiation: 0 },
+      metrics: emptyMetrics,
+    };
+  }
+
+  // ── Build WHERE filters ──────────────────────────────────────────────────────
+  let leadsParams = [tenantId];
+  let leadsWhere  = "l.tenant_id = $1 AND l.is_deleted = 0";
+
+  if (employee && employee !== "All Employees") {
+    leadsParams.push(employee);
+    leadsWhere += ` AND l.assigned_to = (SELECT id FROM employees WHERE tenant_id = $1 AND name = $${leadsParams.length} LIMIT 1)`;
+  }
+  if (service && service !== "All Services") {
+    leadsParams.push(`%${service}%`);
+    const si = leadsParams.length;
+    leadsWhere += ` AND (l.form_name LIKE $${si} OR l.keyword LIKE $${si} OR l.source LIKE $${si})`;
+  }
+
+  let callsParams = [tenantId];
+  let callsWhere  = "tenant_id = $1";
+  if (employee && employee !== "All Employees") {
+    callsParams.push(employee);
+    callsWhere += ` AND employee_id = (SELECT id FROM employees WHERE tenant_id = $1 AND name = $${callsParams.length} LIMIT 1)`;
+  }
+
+  let meetingsParams = [tenantId];
+  let meetingsWhere  = "tenant_id = $1";
+  if (employee && employee !== "All Employees") {
+    meetingsParams.push(employee);
+    meetingsWhere += ` AND employee_id = (SELECT id FROM employees WHERE tenant_id = $1 AND name = $${meetingsParams.length} LIMIT 1)`;
+  }
+
+  // ── Run queries in parallel ─────────────────────────────────────────────────
+  const [leadsResult, callsResult, meetingsResult] = await Promise.all([
+    pool.query(
+      `SELECT
+         COUNT(*)                                                                         AS total_leads,
+         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN
+               ('qualified','call booked','proposal sent','negotiation',
+                'converted','closed won','showed up','booked')
+             OR   LOWER(COALESCE(status,''))  IN ('qualified','warm','booked')
+             THEN 1 ELSE 0 END)                                                          AS qualified_leads,
+         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('converted','won','closed won')
+             OR   LOWER(COALESCE(status,''))  IN ('converted','won')
+             THEN 1 ELSE 0 END)                                                          AS converted_leads,
+         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('proposal sent','negotiation')
+             OR   LOWER(COALESCE(status,''))  LIKE '%proposal%'
+             THEN 1 ELSE 0 END)                                                          AS proposal_sent,
+         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('converted','won','closed won')
+             OR   LOWER(COALESCE(status,''))  IN ('converted','won')
+             THEN COALESCE(expected_revenue,0) ELSE 0 END)                               AS revenue,
+         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'new lead')) IN ('new lead','attempted')
+             AND (interactions IS NULL OR interactions = 0)
+             THEN 1 ELSE 0 END)                                                          AS not_contacted,
+         SUM(CASE WHEN LOWER(COALESCE(status,''))  IN ('not interested','unqualified')
+             THEN 1 ELSE 0 END)                                                          AS unqualified,
+         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) = 'negotiation'
+             THEN 1 ELSE 0 END)                                                          AS stuck_negotiation
+       FROM leads l
+       WHERE ${leadsWhere}`,
+      leadsParams
+    ),
+    pool.query(
+      `SELECT
+         COUNT(*)                                             AS total_calls,
+         SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END)  AS connected_calls
+       FROM employee_calls WHERE ${callsWhere}`,
+      callsParams
+    ),
+    pool.query(
+      `SELECT COUNT(*) AS meetings_done FROM meetings WHERE ${meetingsWhere}`,
+      meetingsParams
+    ),
+  ]);
+
+  // ── Compute values ──────────────────────────────────────────────────────────
+  const row            = leadsResult.rows[0]   || {};
+  const totalLeads     = Number(row.total_leads     || 0);
+  const qualifiedLeads = Number(row.qualified_leads || 0);
+  const convertedLeads = Number(row.converted_leads || 0);
+  const totalCalls     = Number(callsResult.rows[0]?.total_calls     || 0);
+  const connectedCalls = Number(callsResult.rows[0]?.connected_calls || 0);
+  const meetingsDone   = Number(meetingsResult.rows[0]?.meetings_done || 0);
+  const meetingNotScheduled = Math.max(0, qualifiedLeads - meetingsDone);
+
+  // Rates — all capped 0-100
+  const pickupRate = totalCalls     > 0 ? Math.min(100, Math.round((connectedCalls / totalCalls)     * 100)) : 0;
+  const qualRate   = totalLeads     > 0 ? Math.min(100, Math.round((qualifiedLeads / totalLeads)     * 100)) : 0;
+  const convRate   = totalLeads     > 0 ? Math.min(100, Math.round((convertedLeads / totalLeads)     * 100)) : 0;
+
+  return {
+    success: true,
+    source: "database",
+    kpiData: [
+      { label: "Leads Assigned",  value: String(totalLeads)                       },
+      { label: "Calls Done",      value: String(totalCalls)                        },
+      { label: "Qualified Leads", value: String(qualifiedLeads)                    },
+      { label: "Meetings Done",   value: String(meetingsDone)                      },
+      { label: "Proposal Sent",   value: String(row.proposal_sent || 0)            },
+      { label: "Revenue",         value: formatINR(row.revenue    || 0)            },
+    ],
+    oppData: {
+      notContacted:     Number(row.not_contacted    || 0),
+      unqualified:      Number(row.unqualified      || 0),
+      noMeeting:        meetingNotScheduled,
+      stuckNegotiation: Number(row.stuck_negotiation || 0),
+    },
+    metrics: [
+      { label: "Pickup Rate",        shortLabel: "Pickup",  value: pickupRate, rgb: "124,58,237", desc: "Calls answered vs dialed",   trend: `${pickupRate}% pickup` },
+      { label: "Qualification Rate", shortLabel: "Qualify", value: qualRate,   rgb: "220,38,120", desc: "Qualified vs total leads",    trend: `${qualRate}% qualified` },
+      { label: "Conversion Rate",    shortLabel: "Convert", value: convRate,   rgb: "16,185,129", desc: "Closed deals vs total leads", trend: `${convRate}% converted` },
+    ],
+  };
+}
+
+
+async function getOppCategoryLeads(tenantId = TENANT, options = {}) {
+  const { category, employee, service } = options;
+
+  let params = [tenantId];
+  let categoryWhere = "1=1";
+
+  if (category === "not_contacted") {
+    categoryWhere = "LOWER(COALESCE(l.pipeline_stage, 'new lead')) = 'new lead' AND (l.interactions IS NULL OR l.interactions = 0)";
+  } else if (category === "unqualified") {
+    categoryWhere = "(LOWER(COALESCE(l.pipeline_stage, '')) = 'unqualified' OR LOWER(COALESCE(l.status, '')) IN ('not interested', 'unqualified'))";
+  } else if (category === "no_meeting") {
+    categoryWhere = "(LOWER(COALESCE(l.pipeline_stage, '')) = 'qualified' OR LOWER(COALESCE(l.status, '')) IN ('qualified', 'warm')) AND LOWER(COALESCE(l.pipeline_stage, '')) NOT IN ('meeting', 'meeting booked', 'meeting done', 'demo')";
+  } else if (category === "stuck_negotiation") {
+    categoryWhere = "LOWER(COALESCE(l.pipeline_stage, '')) = 'negotiation'";
+  }
+
+  let extraWhere = "";
+
+  if (employee && employee !== "All Employees") {
+    params.push(employee);
+    extraWhere += ` AND l.assigned_to = (SELECT id FROM employees WHERE name = $${params.length} LIMIT 1)`;
+  }
+  if (service && service !== "All Services") {
+    params.push(`%${service}%`);
+    extraWhere += ` AND (l.form_name LIKE $${params.length} OR l.keyword LIKE $${params.length} OR l.source LIKE $${params.length})`;
+  }
+
+  const result = await pool.query(
+    `SELECT l.id, l.lead_name, l.phone, l.email, l.city,
+            l.pipeline_stage, l.status, l.temperature,
+            l.expected_revenue, l.interactions, l.created_at,
+            e.name AS assigned_to_name
+     FROM leads l
+     LEFT JOIN employees e ON e.id = l.assigned_to
+     WHERE l.tenant_id = $1 AND l.is_deleted = 0
+       AND ${categoryWhere}${extraWhere}
+     ORDER BY l.created_at DESC
+     LIMIT 100`,
+    params
+  );
+
+  return { success: true, leads: result.rows };
 }
 
 module.exports = {
@@ -903,4 +1277,6 @@ module.exports = {
   generateAiInsights,
   getIncentivesData,
   getAiInsightsFromDb,
+  getSalesFunnelKPIs,
+  getOppCategoryLeads,
 };

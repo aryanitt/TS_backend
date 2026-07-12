@@ -321,17 +321,50 @@ const getEmployeeDetails = async (req, res) => {
       ? Math.max(0, Math.min(99, Math.round(100 - (stats.followUps / totalLeads) * 100)))
       : 0;
 
+    const cashResult = await pool.query(
+      `SELECT COALESCE(SUM(amount), 0) AS total
+       FROM cash_collections
+       WHERE tenant_id = 'default' AND employee_id = $1`,
+      [id],
+    );
+    const cashTotal = Number(cashResult.rows[0]?.total) || 0;
+
+    const cashRecordsResult = await pool.query(
+      `SELECT cc.*, l.lead_name, l.company_name
+       FROM cash_collections cc
+       LEFT JOIN leads l ON l.id = cc.lead_id
+       WHERE cc.employee_id = $1
+       ORDER BY cc.payment_at DESC, cc.id DESC
+       LIMIT 100`,
+      [id],
+    );
+
     res.json({
       success: true,
       employee: {
         ...employee,
         manager_name: employee.manager_name || null,
         stats,
+        cashCollections: cashRecordsResult.rows.map((row) => ({
+          id: row.id,
+          leadId: row.lead_id,
+          leadName: row.lead_name,
+          companyName: row.company_name,
+          amount: Number(row.amount) || 0,
+          paymentMode: row.payment_mode,
+          paymentAt: row.payment_at,
+          transactionId: row.transaction_id,
+          slipUrl: row.slip_url,
+          slipFilename: row.slip_filename,
+          notes: row.notes,
+          recordedBy: row.recorded_by,
+          createdAt: row.created_at,
+        })),
         achieved: {
           calls: stats.contacted,
           qualifiedLeads: stats.qualified,
           meetings: stats.totalMeetings,
-          cash: stats.revenue,
+          cash: cashTotal,
         },
         performance: {
           responseTimeMin: 1.8,

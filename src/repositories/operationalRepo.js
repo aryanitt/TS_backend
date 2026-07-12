@@ -9,6 +9,35 @@ function withId(row, mapper) {
   return { ...mapped, id, _id: id };
 }
 
+function toLocalSqlString(val) {
+  if (!val) return null;
+  if (typeof val === "string") {
+    if (val.includes("T") && val.endsWith("Z")) {
+      const d = new Date(val);
+      if (Number.isNaN(d.getTime())) return val;
+      const year = d.getUTCFullYear();
+      const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+      const date = String(d.getUTCDate()).padStart(2, "0");
+      const hours = String(d.getUTCHours()).padStart(2, "0");
+      const minutes = String(d.getUTCMinutes()).padStart(2, "0");
+      const seconds = String(d.getUTCSeconds()).padStart(2, "0");
+      return `${year}-${month}-${date}T${hours}:${minutes}:${seconds}`;
+    }
+    return val.replace(" ", "T");
+  }
+  if (val instanceof Date) {
+    if (Number.isNaN(val.getTime())) return null;
+    const year = val.getFullYear();
+    const month = String(val.getMonth() + 1).padStart(2, "0");
+    const date = String(val.getDate()).padStart(2, "0");
+    const hours = String(val.getHours()).padStart(2, "0");
+    const minutes = String(val.getMinutes()).padStart(2, "0");
+    const seconds = String(val.getSeconds()).padStart(2, "0");
+    return `${year}-${month}-${date}T${hours}:${minutes}:${seconds}`;
+  }
+  return val;
+}
+
 function mapLead(row, assignedEmployee) {
   if (!row) return null;
   const lead = {
@@ -81,6 +110,8 @@ function mapEmployee(row) {
     managerId: row.manager_id,
     territory: row.territory,
     city: row.city,
+    callyserId: row.callyser_id || null,
+    empCode: row.emp_id || null,
     capacity: {
       maxActiveLeads: row.max_active_leads ?? 40,
       currentActiveLeads: row.current_active_leads ?? 0,
@@ -185,11 +216,12 @@ function mapCall(row) {
     tenantId: row.tenant_id,
     leadId: row.lead_id,
     employeeId: row.employee_id,
+    callyzerCallId: row.callyzer_call_id || null,
     direction: row.direction,
     outcome: row.outcome,
     durationSec: row.duration_sec,
-    startedAt: row.started_at,
-    endedAt: row.ended_at,
+    startedAt: toLocalSqlString(row.started_at),
+    endedAt: toLocalSqlString(row.ended_at),
     sopId: row.sop_id,
     checklistProgress: (() => {
       const raw = row.checklist_progress;
@@ -203,7 +235,10 @@ function mapCall(row) {
     transcript: row.transcript,
     notes: row.notes,
     aiSummary: row.ai_summary,
-    createdAt: row.created_at,
+    createdAt: toLocalSqlString(row.created_at),
+    clientName: row.client_name || null,
+    clientPhone: row.client_phone || null,
+    clientCompany: row.client_company || null,
   });
 }
 
@@ -215,11 +250,11 @@ function mapFollowup(row) {
     leadId: row.lead_id,
     employeeId: row.employee_id,
     taskId: row.task_id,
-    scheduledAt: row.scheduled_at,
+    scheduledAt: toLocalSqlString(row.scheduled_at),
     note: row.note,
     status: row.status,
-    completedAt: row.completed_at,
-    createdAt: row.created_at,
+    completedAt: toLocalSqlString(row.completed_at),
+    createdAt: toLocalSqlString(row.created_at),
   });
 }
 
@@ -231,13 +266,13 @@ function mapMeeting(row) {
     leadId: row.lead_id,
     employeeId: row.employee_id,
     title: row.title,
-    scheduledAt: row.scheduled_at,
+    scheduledAt: toLocalSqlString(row.scheduled_at),
     durationMin: row.duration_min,
     meetLink: row.meet_link,
     location: row.location,
     status: row.status,
     mom: row.mom || {},
-    createdAt: row.created_at,
+    createdAt: toLocalSqlString(row.created_at),
   });
 }
 
@@ -252,12 +287,12 @@ function mapTask(row) {
     title: row.title,
     description: row.description,
     priority: row.priority,
-    dueAt: row.due_at,
+    dueAt: toLocalSqlString(row.due_at),
     status: row.status,
     sopChecklist: row.sop_checklist || [],
-    completedAt: row.completed_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    completedAt: toLocalSqlString(row.completed_at),
+    createdAt: toLocalSqlString(row.created_at),
+    updatedAt: toLocalSqlString(row.updated_at),
   });
 }
 
@@ -366,8 +401,8 @@ async function insertLead(tenantId, data) {
 async function findLeadById(tenantId, leadId, { populate = false } = {}) {
   const result = await pool.query(
     populate
-      ? `SELECT ${LEAD_SELECT} FROM leads l LEFT JOIN employees e ON e.id = l.assigned_to WHERE l.id = $1 AND l.tenant_id = $2 AND l.is_deleted = false`
-      : `SELECT * FROM leads WHERE id = $1 AND tenant_id = $2 AND is_deleted = false`,
+      ? `SELECT ${LEAD_SELECT} FROM leads l LEFT JOIN employees e ON e.id = l.assigned_to WHERE l.id = $1 AND l.tenant_id = $2 AND l.is_deleted = 0`
+      : `SELECT * FROM leads WHERE id = $1 AND tenant_id = $2 AND is_deleted = 0`,
     [leadId, tenantId],
   );
   const row = result.rows[0];
@@ -375,8 +410,25 @@ async function findLeadById(tenantId, leadId, { populate = false } = {}) {
   return populate ? mapLead(row, joinEmployee(row)) : mapLead(row);
 }
 
+async function findLeadByPhone(tenantId, phone, { assignedTo } = {}) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  const last10 = digits.slice(-10);
+  if (!last10 || last10.length < 10) return null;
+
+  const params = [tenantId, `%${last10}`];
+  let sql = `SELECT * FROM leads WHERE tenant_id = $1 AND is_deleted = 0 AND phone LIKE $2`;
+  if (assignedTo != null) {
+    sql += ` AND assigned_to = $3`;
+    params.push(assignedTo);
+  }
+  sql += ` ORDER BY id DESC LIMIT 1`;
+
+  const result = await pool.query(sql, params);
+  return mapLead(result.rows[0]);
+}
+
 async function listLeads(tenantId, filters = {}, { page = 1, limit = 50 } = {}) {
-  const conditions = ["l.tenant_id = $1", "l.is_deleted = false"];
+  const conditions = ["l.tenant_id = $1", "l.is_deleted = 0"];
   const params = [tenantId];
   let idx = 2;
 
@@ -478,7 +530,7 @@ async function updateLead(tenantId, leadId, patch) {
 
   fields.push("updated_at = NOW()");
   const result = await pool.query(
-    `UPDATE leads SET ${fields.join(", ")} WHERE tenant_id = $1 AND id = $2 AND is_deleted = false RETURNING *`,
+    `UPDATE leads SET ${fields.join(", ")} WHERE tenant_id = $1 AND id = $2 AND is_deleted = 0 RETURNING *`,
     params,
   );
   return mapLead(result.rows[0]);
@@ -979,10 +1031,54 @@ async function insertCall(data) {
 
 async function listCalls(tenantId, employeeId) {
   const result = await pool.query(
-    `SELECT * FROM employee_calls WHERE tenant_id = $1 AND employee_id = $2 ORDER BY created_at DESC`,
+    `SELECT ec.*, l.lead_name AS client_name, l.phone AS client_phone, l.company_name AS client_company
+     FROM employee_calls ec
+     LEFT JOIN leads l ON ec.lead_id = l.id
+     WHERE ec.tenant_id = $1 AND ec.employee_id = $2
+     ORDER BY ec.created_at DESC`,
     [tenantId, employeeId],
   );
   return result.rows.map(mapCall);
+}
+
+async function findCallByCallyzerId(tenantId, callyzerCallId) {
+  const result = await pool.query(
+    `SELECT ec.*, l.lead_name AS client_name, l.phone AS client_phone, l.company_name AS client_company
+     FROM employee_calls ec
+     LEFT JOIN leads l ON ec.lead_id = l.id
+     WHERE ec.tenant_id = $1 AND ec.callyzer_call_id = $2 LIMIT 1`,
+    [tenantId, callyzerCallId],
+  );
+  return mapCall(result.rows[0]);
+}
+
+async function upsertCallyzerCall(data) {
+  const existing = data.callyzerCallId
+    ? await findCallByCallyzerId(data.tenantId, data.callyzerCallId)
+    : null;
+  if (existing) return existing;
+
+  const result = await pool.query(
+    `INSERT INTO employee_calls (
+       tenant_id, lead_id, employee_id, callyzer_call_id, direction, outcome,
+       duration_sec, started_at, ended_at, recording_url, notes, ai_summary
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    [
+      data.tenantId,
+      data.leadId || null,
+      data.employeeId,
+      data.callyzerCallId || null,
+      data.direction || "outbound",
+      data.outcome || null,
+      data.durationSec || null,
+      data.startedAt || null,
+      data.endedAt || null,
+      data.recordingUrl || null,
+      data.notes || null,
+      data.aiSummary || null,
+    ],
+  );
+  return mapCall(result.rows[0]);
 }
 
 async function insertTask(data) {
@@ -1206,14 +1302,22 @@ async function getAdminKpis(tenantId, range = {}) {
       COUNT(*) FILTER (WHERE pipeline_stage = 'won')::int AS conversions,
       COALESCE(SUM(expected_revenue) FILTER (WHERE pipeline_stage = 'won'), 0)::float AS revenue
      FROM leads
-     WHERE tenant_id = $1 AND is_deleted = false ${dateFilter}`,
+     WHERE tenant_id = $1 AND is_deleted = 0 ${dateFilter}`,
     params,
   );
 
+  const cashResult = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0)::float AS cash_collected
+     FROM cash_collections
+     WHERE tenant_id = $1`,
+    [tenantId],
+  );
+
   const row = result.rows[0];
+  const cashCollected = cashResult.rows[0]?.cash_collected || 0;
   return {
     revenue: row.revenue || 0,
-    cashCollected: row.revenue || 0,
+    cashCollected,
     conversionRate: row.total_leads ? Math.round(((row.conversions || 0) / row.total_leads) * 100) : 0,
     qualifiedLeads: row.qualified || 0,
     pipelineValue: row.pipeline_value || 0,
@@ -1225,7 +1329,7 @@ async function getPipelineGrouped(tenantId, filters = {}) {
   const params = [tenantId];
   let sql = `
     SELECT pipeline_stage AS stage, COUNT(*)::int AS count, COALESCE(SUM(expected_revenue), 0)::float AS value
-    FROM leads WHERE tenant_id = $1 AND is_deleted = false
+    FROM leads WHERE tenant_id = $1 AND is_deleted = 0
   `;
   let idx = 2;
   if (filters.assignedTo) {
@@ -1243,6 +1347,112 @@ async function getPipelineGrouped(tenantId, filters = {}) {
   return result.rows.map((r) => ({ _id: r.stage, count: r.count, value: r.value }));
 }
 
+function mapCashCollection(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    leadId: row.lead_id,
+    employeeId: row.employee_id,
+    amount: Number(row.amount) || 0,
+    currency: row.currency || "INR",
+    paymentMode: row.payment_mode,
+    paymentAt: row.payment_at,
+    transactionId: row.transaction_id,
+    slipUrl: row.slip_url,
+    slipFilename: row.slip_filename,
+    notes: row.notes,
+    recordedBy: row.recorded_by,
+    leadName: row.lead_name,
+    companyName: row.company_name,
+    employeeName: row.employee_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function insertCashCollection(data) {
+  const result = await pool.query(
+    `INSERT INTO cash_collections
+      (tenant_id, lead_id, employee_id, amount, currency, payment_mode, payment_at,
+       transaction_id, slip_url, slip_filename, notes, recorded_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+     RETURNING *`,
+    [
+      data.tenantId,
+      data.leadId,
+      data.employeeId || null,
+      data.amount,
+      data.currency || "INR",
+      data.paymentMode,
+      data.paymentAt,
+      data.transactionId || null,
+      data.slipUrl || null,
+      data.slipFilename || null,
+      data.notes || null,
+      data.recordedBy || null,
+    ],
+  );
+  return mapCashCollection(result.rows[0]);
+}
+
+async function listCashCollectionsByLead(tenantId, leadId) {
+  const result = await pool.query(
+    `SELECT cc.*, l.lead_name, l.company_name, e.name AS employee_name
+     FROM cash_collections cc
+     LEFT JOIN leads l ON l.id = cc.lead_id
+     LEFT JOIN employees e ON e.id = cc.employee_id
+     WHERE cc.tenant_id = $1 AND cc.lead_id = $2
+     ORDER BY cc.payment_at DESC, cc.id DESC`,
+    [tenantId, leadId],
+  );
+  return result.rows.map(mapCashCollection);
+}
+
+async function listCashCollectionsByEmployee(tenantId, employeeId, limit = 200) {
+  const result = await pool.query(
+    `SELECT cc.*, l.lead_name, l.company_name, e.name AS employee_name
+     FROM cash_collections cc
+     LEFT JOIN leads l ON l.id = cc.lead_id
+     LEFT JOIN employees e ON e.id = cc.employee_id
+     WHERE cc.tenant_id = $1 AND cc.employee_id = $2
+     ORDER BY cc.payment_at DESC, cc.id DESC
+     LIMIT $3`,
+    [tenantId, employeeId, limit],
+  );
+  return result.rows.map(mapCashCollection);
+}
+
+async function sumCashByEmployee(tenantId, employeeId) {
+  const result = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0)::float AS total
+     FROM cash_collections
+     WHERE tenant_id = $1 AND employee_id = $2`,
+    [tenantId, employeeId],
+  );
+  return Number(result.rows[0]?.total) || 0;
+}
+
+async function sumCashByLead(tenantId, leadId) {
+  const result = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0)::float AS total
+     FROM cash_collections
+     WHERE tenant_id = $1 AND lead_id = $2`,
+    [tenantId, leadId],
+  );
+  return Number(result.rows[0]?.total) || 0;
+}
+
+async function sumCashByTenant(tenantId) {
+  const result = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0)::float AS total
+     FROM cash_collections
+     WHERE tenant_id = $1`,
+    [tenantId],
+  );
+  return Number(result.rows[0]?.total) || 0;
+}
+
 async function getLeaderboard(tenantId, limit = 10) {
   const result = await pool.query(
     `SELECT l.assigned_to AS employee_id,
@@ -1251,7 +1461,7 @@ async function getLeaderboard(tenantId, limit = 10) {
       e.name, e.email, e.role, e.department
      FROM leads l
      JOIN employees e ON e.id = l.assigned_to
-     WHERE l.tenant_id = $1 AND l.pipeline_stage = 'won' AND l.is_deleted = false
+     WHERE l.tenant_id = $1 AND l.pipeline_stage = 'won' AND l.is_deleted = 0
      GROUP BY l.assigned_to, e.name, e.email, e.role, e.department
      ORDER BY conversions DESC, revenue DESC
      LIMIT $2`,
@@ -1283,6 +1493,7 @@ module.exports = {
   ping,
   insertLead,
   findLeadById,
+  findLeadByPhone,
   listLeads,
   updateLead,
   softDeleteLead,
@@ -1316,6 +1527,8 @@ module.exports = {
   listNotes,
   insertCall,
   listCalls,
+  findCallByCallyzerId,
+  upsertCallyzerCall,
   insertTask,
   findTaskById,
   updateTask,
@@ -1330,6 +1543,12 @@ module.exports = {
   updateMeeting,
   listMeetings,
   insertFileAsset,
+  insertCashCollection,
+  listCashCollectionsByLead,
+  listCashCollectionsByEmployee,
+  sumCashByEmployee,
+  sumCashByLead,
+  sumCashByTenant,
   getAdminKpis,
   getPipelineGrouped,
   getLeaderboard,

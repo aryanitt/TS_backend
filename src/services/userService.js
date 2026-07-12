@@ -183,12 +183,18 @@ async function changePassword(userId, currentPassword, newPassword) {
 async function ensureAdminUser() {
   const loginId = process.env.ADMIN_LOGIN_ID || "ADMIN";
   const email = (process.env.ADMIN_EMAIL || "admin@tspublication.in").toLowerCase();
-  const plain = process.env.ADMIN_PASSWORD || "Admin@12345";
 
   const existing = await pool.query(
     `SELECT id FROM users WHERE role = 'admin' LIMIT 1`,
   );
-  if (existing.rows.length) return;
+  if (existing.rows.length) {
+    return { created: false, loginId, email };
+  }
+
+  // No hardcoded default password: use ADMIN_PASSWORD env or a random one-time
+  // password. The account is flagged must_change_password either way.
+  const envPassword = String(process.env.ADMIN_PASSWORD || "").trim();
+  const plain = envPassword || generateTempPassword(16);
 
   const passwordHash = await hashPassword(plain);
   await pool.query(
@@ -197,6 +203,12 @@ async function ensureAdminUser() {
     [loginId, email, passwordHash],
   );
   console.log(`[auth] Seeded admin user login_id=${loginId} email=${email}`);
+  if (!envPassword) {
+    // Printed once at seed time only — set ADMIN_PASSWORD to avoid this.
+    console.log(`[auth] Generated one-time admin password: ${plain}`);
+    console.log("[auth] Sign in and change it immediately, or set ADMIN_PASSWORD and re-seed.");
+  }
+  return { created: true, loginId, email, tempPassword: envPassword ? null : plain };
 }
 
 function serializeUser(row) {

@@ -118,6 +118,28 @@ const momSchema = z.object({
   actionItems: z.array(z.string()).optional(),
 });
 
+const cashCollectionSchema = z.object({
+  amount: z.coerce.number().positive(),
+  paymentMode: z.string().optional(),
+  payment_mode: z.string().optional(),
+  paymentAt: z.coerce.date().optional(),
+  payment_at: z.coerce.date().optional(),
+  transactionId: z.string().optional().nullable(),
+  transaction_id: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  employeeId: objectId.optional(),
+  employee_id: objectId.optional(),
+  currency: z.string().optional(),
+}).superRefine((data, ctx) => {
+  if (!data.paymentMode && !data.payment_mode) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "paymentMode is required",
+      path: ["paymentMode"],
+    });
+  }
+});
+
 function validate(schema) {
   return (req, res, next) => {
     const parsed = schema.safeParse(req.body);
@@ -146,4 +168,5 @@ module.exports = {
   meetingSchema,
   meetingPatchSchema,
   momSchema,
+  cashCollectionSchema,
 };

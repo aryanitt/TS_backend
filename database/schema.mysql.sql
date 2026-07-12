@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS sops (
   department VARCHAR(100) DEFAULT '',
   estimated_time VARCHAR(50) DEFAULT '',
   script TEXT,
+  scripts JSON DEFAULT ('[]'),
   questions JSON DEFAULT ('[]'),
   frameworks JSON DEFAULT ('[]'),
   tags JSON DEFAULT ('[]'),
@@ -244,8 +245,9 @@ CREATE TABLE IF NOT EXISTS lead_notes (
 CREATE TABLE IF NOT EXISTS employee_calls (
   id INT AUTO_INCREMENT PRIMARY KEY,
   tenant_id VARCHAR(50) DEFAULT 'default',
-  lead_id INT NOT NULL,
+  lead_id INT NULL,
   employee_id INT NOT NULL,
+  callyzer_call_id VARCHAR(100) NULL,
   direction VARCHAR(20) DEFAULT 'outbound',
   outcome VARCHAR(100),
   duration_sec INT,
@@ -329,6 +331,26 @@ CREATE TABLE IF NOT EXISTS file_assets (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS cash_collections (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  tenant_id VARCHAR(50) DEFAULT 'default',
+  lead_id INT NOT NULL,
+  employee_id INT NULL,
+  amount DECIMAL(12, 2) NOT NULL,
+  currency VARCHAR(10) DEFAULT 'INR',
+  payment_mode VARCHAR(50) NOT NULL,
+  payment_at DATETIME NOT NULL,
+  transaction_id VARCHAR(255) NULL,
+  slip_url TEXT NULL,
+  slip_filename VARCHAR(255) NULL,
+  notes TEXT NULL,
+  recorded_by VARCHAR(100) NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE,
+  FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ---------------------------------------------------------------------------
 -- Legacy / dashboard tables
 -- ---------------------------------------------------------------------------
@@ -384,6 +406,20 @@ CREATE TABLE IF NOT EXISTS notifications (
   type VARCHAR(50) DEFAULT 'info',
   is_read TINYINT(1) DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS scheduled_lead_assignments (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  tenant_id VARCHAR(50) DEFAULT 'default',
+  lead_id INT NOT NULL,
+  employee_id INT NOT NULL,
+  scheduled_date DATE NOT NULL,
+  status VARCHAR(30) DEFAULT 'pending',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE,
+  FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE,
+  INDEX idx_scheduled_date_status (tenant_id, scheduled_date, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------------

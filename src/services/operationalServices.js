@@ -1,6 +1,7 @@
 const repo = require("../repositories/operationalRepo");
 const { emitTenant, emitEmployee } = require("../realtime/socket");
 const { cacheGet, cacheSet } = require("../config/redis");
+const pool = require("../../config/db");
 
 const { DEFAULT_TENANT_ID } = repo;
 
@@ -500,6 +501,72 @@ async function getPipelineGrouped(tenantId, filters = {}) {
   return repo.getPipelineGrouped(tenantId, filters);
 }
 
+async function scheduleLeadAssignments({ tenantId, leadIds, employeeId, startDate, leadsPerDay, actor }) {
+  const parsedLeadsPerDay = parseInt(leadsPerDay) || 10;
+  const start = new Date(startDate);
+  
+  let currentOffset = 0;
+  for (let i = 0; i < leadIds.length; i += parsedLeadsPerDay) {
+    const chunk = leadIds.slice(i, i + parsedLeadsPerDay);
+    
+    const d = new Date(start);
+    d.setDate(d.getDate() + currentOffset);
+    const dateStr = d.toISOString().split("T")[0];
+    
+    for (const leadId of chunk) {
+      await pool.query(
+        `INSERT INTO scheduled_lead_assignments (tenant_id, lead_id, employee_id, scheduled_date, status)
+         VALUES ($1, $2, $3, $4, 'pending')`,
+        [tenantId, leadId, employeeId, dateStr]
+      );
+    }
+    currentOffset += 1;
+  }
+  return { success: true, count: leadIds.length, days: currentOffset };
+}
+
+async function processDueScheduledAssignments(tenantId = DEFAULT_TENANT_ID) {
+  const result = await pool.query(
+    `SELECT * FROM scheduled_lead_assignments
+     WHERE tenant_id = $1 AND status = 'pending' AND scheduled_date <= CURRENT_DATE()`,
+    [tenantId]
+  );
+  
+  const processed = [];
+  const failures = [];
+  
+  for (const row of result.rows) {
+    try {
+      await assignLead({
+        tenantId,
+        leadId: row.lead_id,
+        employeeId: row.employee_id,
+        method: "scheduled",
+        performedBy: "system",
+        reason: `Scheduled assignment for ${row.scheduled_date instanceof Date ? row.scheduled_date.toISOString().split("T")[0] : String(row.scheduled_date)}`
+      });
+      
+      await pool.query(
+        `UPDATE scheduled_lead_assignments
+         SET status = 'completed', processed_at = NOW()
+         WHERE id = $1`,
+        [row.id]
+      );
+      processed.push(row.id);
+    } catch (err) {
+      console.error(`Scheduled assignment failed for lead ${row.lead_id}:`, err.message);
+      await pool.query(
+        `UPDATE scheduled_lead_assignments
+         SET status = 'failed', failure_reason = $2
+         WHERE id = $1`,
+        [row.id, err.message]
+      );
+      failures.push({ id: row.id, reason: err.message });
+    }
+  }
+  return { processed, failures };
+}
+
 module.exports = {
   tenant,
   actor,
@@ -521,4 +588,6 @@ module.exports = {
   writeTimeline,
   writeAudit,
   notify,
+  scheduleLeadAssignments,
+  processDueScheduledAssignments,
 };

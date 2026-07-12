@@ -28,9 +28,8 @@ ALTER TABLE employees ADD COLUMN user_id INT NULL;
 ALTER TABLE employees ADD KEY idx_employees_user_id (user_id);
 
 -- ---------------------------------------------------------------------------
--- Default admin (also seeded automatically on backend startup via ensureAdminUser)
--- Login ID : ADMIN
--- Email    : admin@tspublication.in
--- Password : Admin@12345   ← change immediately after first login
--- Override via env: ADMIN_LOGIN_ID, ADMIN_EMAIL, ADMIN_PASSWORD, JWT_SECRET
+-- Default admin is seeded automatically on backend startup via ensureAdminUser.
+-- Set ADMIN_LOGIN_ID, ADMIN_EMAIL, ADMIN_PASSWORD, JWT_SECRET env vars first.
+-- If ADMIN_PASSWORD is not set, a random one-time password is generated and
+-- printed once to the server log. Change it immediately after first login.
 -- ---------------------------------------------------------------------------

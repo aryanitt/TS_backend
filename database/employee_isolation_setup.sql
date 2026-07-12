@@ -144,7 +144,7 @@ SELECT 'calls', employee_id, COUNT(*) FROM employee_calls GROUP BY employee_id;
 -- 6) Admin user (if users table is empty)
 -- Do NOT paste plain passwords here — use on server:
 --   cd backend && npm run seed:admin
--- Default: login ADMIN / admin@tspublication.in / Admin@12345
+-- Set ADMIN_PASSWORD env first, or a random one-time password is printed once.
 -- =============================================================================
 
 -- =============================================================================

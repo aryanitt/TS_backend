@@ -19,10 +19,14 @@ const getDashboard = async (req, res) => {
   } catch (err) {
     res.json({
       success: true,
-      source: "mock",
-      filterData: mock.FILTER_DATA,
-      revenueSeries: mock.revenueSeries,
-      aiInsights: mock.aiInsights,
+      source: "error",
+      filterData: {
+        today: { kpis: [], leaderboard: [], metrics: { pickup: 0, qualification: 0, conversion: 0 }, insights: [], activity: [] },
+        week: { kpis: [], leaderboard: [], metrics: { pickup: 0, qualification: 0, conversion: 0 }, insights: [], activity: [] },
+        month: { kpis: [], leaderboard: [], metrics: { pickup: 0, qualification: 0, conversion: 0 }, insights: [], activity: [] },
+      },
+      revenueSeries: [],
+      aiInsights: [],
     });
   }
 };

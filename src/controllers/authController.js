@@ -3,7 +3,6 @@ const {
   findUserById,
   serializeUser,
   changePassword,
-  ensureAdminUser,
   verifyPassword,
 } = require("../services/userService");
 const { signToken } = require("../utils/token");
@@ -111,23 +110,4 @@ const changePasswordHandler = async (req, res) => {
   }
 };
 
-const seedStatus = async (req, res) => {
-  try {
-    const result = await pool.query(`SELECT COUNT(*) AS c FROM users WHERE role = 'admin'`);
-    const count = Number(result.rows[0]?.c || 0);
-    return res.json({ success: true, hasAdmin: count > 0 });
-  } catch {
-    return res.json({ success: true, hasAdmin: false });
-  }
-};
-
-const bootstrapAdmin = async (req, res) => {
-  try {
-    await ensureAdminUser();
-    return res.json({ success: true, message: "Admin user ready" });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-module.exports = { login, me, changePasswordHandler, seedStatus, bootstrapAdmin };
+module.exports = { login, me, changePasswordHandler };
