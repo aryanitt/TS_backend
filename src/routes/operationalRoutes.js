@@ -604,26 +604,64 @@ router.get("/employee/:employeeId/callyzer/stats", requireEmployeeSelf(), asyncR
     SELECT 
       COUNT(*) AS total_calls,
       SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END) AS connected_calls,
-      AVG(duration_sec) AS avg_duration_sec
+      SUM(CASE WHEN LOWER(direction) IN ('in', 'inbound') THEN 1 ELSE 0 END) AS incoming_calls,
+      SUM(CASE WHEN LOWER(direction) IN ('out', 'outbound') THEN 1 ELSE 0 END) AS outgoing_calls,
+      SUM(CASE WHEN LOWER(direction) IN ('in', 'inbound') AND duration_sec = 0 THEN 1 ELSE 0 END) AS missed_calls,
+      SUM(CASE WHEN outcome = 'rejected' THEN 1 ELSE 0 END) AS rejected_calls,
+      SUM(CASE WHEN LOWER(direction) IN ('out', 'outbound') AND duration_sec = 0 THEN 1 ELSE 0 END) AS not_pickup_by_client,
+      COUNT(DISTINCT COALESCE(lead_id, phone)) AS unique_clients,
+      SUM(duration_sec) AS total_duration_sec,
+      SUM(CASE WHEN LOWER(direction) IN ('in', 'inbound') THEN duration_sec ELSE 0 END) AS incoming_duration_sec,
+      SUM(CASE WHEN LOWER(direction) IN ('out', 'outbound') THEN duration_sec ELSE 0 END) AS outgoing_duration_sec,
+      SUM(CASE WHEN duration_sec >= 300 THEN 1 ELSE 0 END) AS conversations_5min_plus
     FROM employee_calls
     WHERE tenant_id = $1 AND employee_id = $2 AND ${dateWhere}
   `;
 
   const result = await pool.query(queryText, params);
   const row = result.rows[0] || {};
-  const total = Number(row.total_calls) || 0;
-  const connected = Number(row.connected_calls) || 0;
-  const avgDurationSec = Math.round(Number(row.avg_duration_sec) || 0);
-  const pickupRate = total > 0 ? Math.min(100, Math.round((connected / total) * 100)) : 0;
+  
+  const totalCalls = Number(row.total_calls) || 0;
+  const connectedCalls = Number(row.connected_calls) || 0;
+  const incomingCalls = Number(row.incoming_calls) || 0;
+  const outgoingCalls = Number(row.outgoing_calls) || 0;
+  const missedCalls = Number(row.missed_calls) || 0;
+  const rejectedCalls = Number(row.rejected_calls) || 0;
+  const notPickupByClient = Number(row.not_pickup_by_client) || 0;
+  const uniqueClients = Number(row.unique_clients) || 0;
+  const conversations5MinPlus = Number(row.conversations_5min_plus) || 0;
+  
+  const totalDurationSec = Number(row.total_duration_sec) || 0;
+  const incomingDurationSec = Number(row.incoming_duration_sec) || 0;
+  const outgoingDurationSec = Number(row.outgoing_duration_sec) || 0;
+
+  const formatDurationHms = (sec) => {
+    const s = Number(sec) || 0;
+    const hrs = Math.floor(s / 3600);
+    const mins = Math.floor((s % 3600) / 60);
+    const secs = s % 60;
+    return [hrs, mins, secs].map(v => String(v).padStart(2, '0')).join(':');
+  };
 
   return ok(res, {
     success: true,
     configured: true,
     stats: {
-      total,
-      connectedCalls: connected,
-      pickupRate,
-      avgDurationSec
+      totalCalls,
+      connectedCalls,
+      incomingCalls,
+      outgoingCalls,
+      missedCalls,
+      rejectedCalls,
+      neverAttended: missedCalls,
+      notPickupByClient,
+      uniqueClients,
+      conversations5MinPlus,
+      totalDuration: formatDurationHms(totalDurationSec),
+      incomingDuration: formatDurationHms(incomingDurationSec),
+      outgoingDuration: formatDurationHms(outgoingDurationSec),
+      workingHours: formatDurationHms(totalDurationSec),
+      conversations5MinDuration: `${conversations5MinPlus} connected calls ≥ 5 min`
     },
     period: month || period
   });
