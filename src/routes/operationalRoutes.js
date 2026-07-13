@@ -511,6 +511,24 @@ router.post("/employee/calls", validate(callSchema), requireEmployeeSelfBody("em
   return ok(res, call);
 }));
 
+router.put("/employee/calls/:id", asyncRoute(async (req, res) => {
+  const tenantId = tenant(req);
+  const callId = req.params.id;
+  const { leadId } = req.body;
+  if (!leadId) {
+    return res.status(400).json({ success: false, message: "leadId is required" });
+  }
+  const lead = await repo.findLeadById(tenantId, leadId);
+  if (!lead) {
+    return res.status(400).json({ success: false, message: "Lead not found" });
+  }
+  await pool.query(
+    "UPDATE employee_calls SET lead_id = $1 WHERE tenant_id = $2 AND id = $3",
+    [leadId, tenantId, callId]
+  );
+  return ok(res, { success: true });
+}));
+
 router.post("/employee/callyzer/start-call", requireEmployeeSelfBody("employeeId"), requireEmployeeOwnsLeadBody("leadId"), asyncRoute(async (req, res) => {
   const tenantId = tenant(req);
   const [lead, employee] = await Promise.all([
