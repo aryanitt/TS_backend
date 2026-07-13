@@ -75,7 +75,9 @@ async function processCallWithAi(tenantId, callId) {
               {
                 "summary": "Concise summary and MoM text...",
                 "sentiment": "positive" | "neutral" | "negative",
-                "rating": 1-5
+                "rating": 1-5,
+                "temperature": "Hot Lead" | "Warm Lead" | "Cold Lead",
+                "pipelineStage": "Conversation" | "Booked" | "Showed up" | "Proposal Sent"
               }`
             },
             {
@@ -95,6 +97,8 @@ async function processCallWithAi(tenantId, callId) {
       summary = analysis.summary;
       sentiment = analysis.sentiment;
       rating = analysis.rating;
+      temperature = analysis.temperature || "Warm Lead";
+      pipelineStage = analysis.pipelineStage || "Conversation";
 
     } catch (err) {
       logger.error("AI Analysis failed, falling back to simulated analysis", { error: err.message });
@@ -103,6 +107,8 @@ async function processCallWithAi(tenantId, callId) {
       summary = simulated.summary;
       sentiment = simulated.sentiment;
       rating = simulated.rating;
+      temperature = simulated.temperature || "Warm Lead";
+      pipelineStage = simulated.pipelineStage || "Conversation";
     }
   } else {
     // Fallback to simulated high-quality analysis
@@ -111,6 +117,8 @@ async function processCallWithAi(tenantId, callId) {
     summary = simulated.summary;
     sentiment = simulated.sentiment;
     rating = simulated.rating;
+    temperature = simulated.temperature || "Warm Lead";
+    pipelineStage = simulated.pipelineStage || "Conversation";
   }
 
   // Update call in DB
@@ -120,6 +128,16 @@ async function processCallWithAi(tenantId, callId) {
      WHERE id = $5 AND tenant_id = $6`,
     [transcript, summary, summary, sentiment === "positive" ? "Connected" : sentiment === "negative" ? "Hesitant" : "Connected", callId, tenantId]
   );
+
+  // Update lead decided parameters dynamically from MoM!
+  if (call.lead_id) {
+    await pool.query(
+      `UPDATE leads 
+       SET temperature = $1, pipeline_stage = $2, updated_at = NOW()
+       WHERE id = $3 AND tenant_id = $4`,
+      [temperature, pipelineStage, call.lead_id, tenantId]
+    );
+  }
 
   // Fetch updated call log
   const updatedRes = await pool.query(
@@ -170,7 +188,9 @@ AI Insights & Follow-up Actions:
     transcript,
     summary,
     sentiment: "positive",
-    rating: 5
+    rating: 5,
+    temperature: "Hot Lead",
+    pipelineStage: "Proposal Sent"
   };
 }
 
