@@ -19,6 +19,7 @@ const {
   momSchema,
   cashCollectionSchema,
 } = require("../validators/operationalSchemas");
+const pool = require("../../config/db");
 const { requirePg } = require("../middleware/pgReady");
 const {
   isAdminUser,
