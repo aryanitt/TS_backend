@@ -1,4 +1,12 @@
 const pool = require("../../config/db");
+const { CALL_CONVERSATION_MIN_SEC } = require("../utils/callMetrics");
+const { buildPeriodDateFilter } = require("../utils/periodFilter");
+const {
+  mapCallStatsRow,
+  CALL_STATS_AGG_SQL,
+  callStatsAggSql,
+  resolvePeriodFilter,
+} = require("../utils/employeeCallStats");
 const {
   logActivity,
   createNotification,
@@ -334,7 +342,7 @@ const getEmployeeDetails = async (req, res) => {
     const callsResult = await pool.query(
       `SELECT
          COUNT(*) AS total_calls,
-         SUM(CASE WHEN duration_sec >= 300 THEN 1 ELSE 0 END) AS conversations_5min_plus,
+         SUM(CASE WHEN duration_sec >= ${CALL_CONVERSATION_MIN_SEC} THEN 1 ELSE 0 END) AS conversations_5min_plus,
          SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END) AS connected_calls
        FROM employee_calls
        WHERE tenant_id = 'default' AND employee_id = $1`,
@@ -847,49 +855,86 @@ const getEmployeeCallyzerStats = async (req, res) => {
     const month = req.query.month;
     const period = String(req.query.period || "month").toLowerCase();
 
-    let dateWhere = "1=1";
-    const params = ["default", id];
+    const periodFilter = buildPeriodDateFilter({
+      period: month ? "month" : period,
+      month,
+      column: "COALESCE(started_at, created_at)",
+      paramOffset: 3,
+    });
 
-    if (month) {
-      dateWhere = "DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = $3";
-      params.push(month);
-    } else if (period === "today") {
-      dateWhere = "DATE(COALESCE(started_at, created_at)) = CURRENT_DATE()";
-    } else if (period === "month") {
-      dateWhere = "DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = DATE_FORMAT(CURRENT_DATE(), '%Y-%m')";
-    }
+    const params = ["default", id, ...periodFilter.params];
 
-    const result = await pool.query(
-      `SELECT
-         COUNT(*) AS total_calls,
-         SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END) AS connected_calls,
-         SUM(CASE WHEN duration_sec >= 300 THEN 1 ELSE 0 END) AS conversations_5min_plus,
-         SUM(duration_sec) AS total_duration_sec
-       FROM employee_calls
-       WHERE tenant_id = $1 AND employee_id = $2 AND ${dateWhere}`,
-      params,
-    );
+    const [statsResult, empResult] = await Promise.all([
+      pool.query(
+        `SELECT ${CALL_STATS_AGG_SQL}
+         FROM employee_calls
+         WHERE tenant_id = $1 AND employee_id = $2 AND ${periodFilter.clause}`,
+        params,
+      ),
+      pool.query(
+        `SELECT id, name, callyser_id, emp_id FROM employees WHERE id = $1 AND tenant_id = 'default' LIMIT 1`,
+        [id],
+      ),
+    ]);
 
-    const row = result.rows[0] || {};
-    const totalCalls = Number(row.total_calls) || 0;
-    const connectedCalls = Number(row.connected_calls) || 0;
-    const conversations5MinPlus = Number(row.conversations_5min_plus) || 0;
-    const totalDurationSec = Number(row.total_duration_sec) || 0;
+    const employee = empResult.rows[0];
+    const stats = mapCallStatsRow(statsResult.rows[0] || {});
+    if (employee?.name) stats.empName = employee.name;
 
     res.json({
       success: true,
       configured: true,
-      stats: {
-        totalCalls,
-        connectedCalls,
-        conversations5MinPlus,
-        pickupRate: totalCalls > 0 ? Math.round((connectedCalls / totalCalls) * 100) : 0,
-        avgDurationSec: connectedCalls > 0 ? Math.round(totalDurationSec / connectedCalls) : 0,
-      },
-      period: month || period,
+      employeeId: Number(id),
+      employeeName: employee?.name || null,
+      stats,
+      period: periodFilter.period || period,
+      label: periodFilter.label,
     });
   } catch (error) {
     console.error("Employee Callyzer stats error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const getTeamCallyzerStatsByEmployee = async (req, res) => {
+  try {
+    const month = req.query.month;
+    const period = String(req.query.period || "today").toLowerCase();
+    const periodFilter = resolvePeriodFilter(month ? "month" : period, month, 2);
+    const params = ["default", ...periodFilter.params];
+
+    const result = await pool.query(
+      `SELECT
+         ec.employee_id,
+         e.name AS employee_name,
+         e.callyser_id,
+         e.emp_id AS emp_code,
+         ${callStatsAggSql("ec")}
+       FROM employee_calls ec
+       INNER JOIN employees e ON e.id = ec.employee_id AND e.tenant_id = ec.tenant_id
+       WHERE ec.tenant_id = $1 AND e.status = 'active' AND ${periodFilter.clause}
+       GROUP BY ec.employee_id, e.name, e.callyser_id, e.emp_id
+       ORDER BY total_calls DESC, e.name ASC`,
+      params,
+    );
+
+    const stats = result.rows.map((row) => ({
+      employeeId: row.employee_id,
+      empName: row.employee_name,
+      empCode: row.emp_code,
+      empNumber: row.callyser_id,
+      ...mapCallStatsRow(row),
+    }));
+
+    res.json({
+      success: true,
+      configured: true,
+      period: periodFilter.period || period,
+      label: periodFilter.label,
+      stats,
+    });
+  } catch (error) {
+    console.error("Team Callyzer stats error:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -901,6 +946,7 @@ module.exports = {
   getEmployeeDetails,
   getEmployeeLeads,
   getEmployeeCallyzerStats,
+  getTeamCallyzerStatsByEmployee,
   createEmployee,
   updateEmployee,
   deleteEmployee,

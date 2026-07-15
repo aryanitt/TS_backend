@@ -1,6 +1,7 @@
 const pool = require("../../config/db");
 const mock = require("../data/mockFallback");
 const { PIPELINE_QUALIFIED_LEAD_SQL } = require("../utils/leadStats");
+const { CALL_CONVERSATION_MIN_SEC } = require("../utils/callMetrics");
 
 const TENANT = "default";
 
@@ -784,7 +785,9 @@ async function listServices(tenantId = TENANT) {
       `SELECT * FROM services WHERE tenant_id = $1 ORDER BY created_at DESC`,
       [tenantId],
     );
-    if (!result.rows.length) return { source: "empty", services: [], success: true };
+    if (!result.rows.length) {
+      return { source: "mock", services: mock.SERVICES, success: true };
+    }
 
     const services = result.rows.map((r) => ({
       ...((typeof r.metadata === "string" ? JSON.parse(r.metadata) : r.metadata) || {}),
@@ -953,7 +956,7 @@ async function getIncentivesData(tenantId = TENANT, month) {
         pool.query(
           `SELECT employee_id, COUNT(*) AS total_calls,
              SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END) AS connected_calls,
-             SUM(CASE WHEN duration_sec >= 300 THEN 1 ELSE 0 END) AS conversations_5min_plus
+             SUM(CASE WHEN duration_sec >= ${CALL_CONVERSATION_MIN_SEC} THEN 1 ELSE 0 END) AS conversations_5min_plus
            FROM employee_calls
            WHERE tenant_id = $1 AND DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = $2
            GROUP BY employee_id`,
@@ -1038,7 +1041,7 @@ async function getIncentivesData(tenantId = TENANT, month) {
           role: e.role || e.department || "Sales Manager",
           department: e.department || "Sales & Growth",
           salary: e.salary || 0,
-          callsCompleted: empCalls.conversations5Min || empCalls.total,
+          callsCompleted: empCalls.conversations5Min,
           callsTarget: e.call_target || 50,
           qualifiedLeads: empLeads.qualified,
           qualifiedTarget: e.qualified_lead_target || 20,

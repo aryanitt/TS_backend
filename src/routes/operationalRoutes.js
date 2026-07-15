@@ -20,6 +20,7 @@ const {
   cashCollectionSchema,
 } = require("../validators/operationalSchemas");
 const pool = require("../../config/db");
+const { CALL_CONVERSATION_MIN_SEC } = require("../utils/callMetrics");
 const { requirePg } = require("../middleware/pgReady");
 const {
   isAdminUser,
@@ -642,6 +643,8 @@ router.get("/employee/:employeeId/callyzer/stats", requireEmployeeSelf(), asyncR
     dateWhere = "DATE(COALESCE(started_at, created_at)) = CURRENT_DATE() - INTERVAL 1 DAY";
   } else if (period === "this_month" || period === "month") {
     dateWhere = "DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = DATE_FORMAT(CURRENT_DATE(), '%Y-%m')";
+  } else if (period === "week" || period === "this_week") {
+    dateWhere = "DATE(COALESCE(started_at, created_at)) >= DATE_SUB(CURRENT_DATE(), INTERVAL WEEKDAY(CURRENT_DATE()) DAY) AND DATE(COALESCE(started_at, created_at)) <= CURRENT_DATE()";
   } else if (period === "last_month") {
     dateWhere = "DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = DATE_FORMAT(CURRENT_DATE() - INTERVAL 1 MONTH, '%Y-%m')";
   }
@@ -655,11 +658,11 @@ router.get("/employee/:employeeId/callyzer/stats", requireEmployeeSelf(), asyncR
       SUM(CASE WHEN duration_sec = 0 OR duration_sec IS NULL THEN 1 ELSE 0 END) AS missed_calls,
       SUM(CASE WHEN outcome = 'rejected' THEN 1 ELSE 0 END) AS rejected_calls,
       SUM(CASE WHEN LOWER(direction) IN ('out', 'outbound') AND (duration_sec = 0 OR duration_sec IS NULL) THEN 1 ELSE 0 END) AS not_pickup_by_client,
-      COUNT(DISTINCT COALESCE(lead_id, phone)) AS unique_clients,
+      COUNT(DISTINCT COALESCE(lead_id, callyzer_call_id, id)) AS unique_clients,
       SUM(duration_sec) AS total_duration_sec,
       SUM(CASE WHEN LOWER(direction) IN ('in', 'inbound') THEN duration_sec ELSE 0 END) AS incoming_duration_sec,
       SUM(CASE WHEN LOWER(direction) IN ('out', 'outbound') THEN duration_sec ELSE 0 END) AS outgoing_duration_sec,
-      SUM(CASE WHEN duration_sec >= 300 THEN 1 ELSE 0 END) AS conversations_5min_plus
+      SUM(CASE WHEN duration_sec >= ${CALL_CONVERSATION_MIN_SEC} THEN 1 ELSE 0 END) AS conversations_5min_plus
     FROM employee_calls
     WHERE tenant_id = $1 AND employee_id = $2 AND ${dateWhere}
   `;
@@ -707,7 +710,7 @@ router.get("/employee/:employeeId/callyzer/stats", requireEmployeeSelf(), asyncR
       incomingDuration: formatDurationHms(incomingDurationSec),
       outgoingDuration: formatDurationHms(outgoingDurationSec),
       workingHours: formatDurationHms(totalDurationSec),
-      conversations5MinDuration: `${conversations5MinPlus} connected calls ≥ 5 min`
+      conversations5MinDuration: `${conversations5MinPlus} connected calls ≥ 2 min`,
     },
     period: month || period
   });
