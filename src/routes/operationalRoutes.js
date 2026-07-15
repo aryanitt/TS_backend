@@ -630,6 +630,24 @@ router.get("/employee/:employeeId/callyzer/stats", requireEmployeeSelf(), asyncR
   const employeeId = req.params.employeeId;
   const month = req.query.month; // e.g. "2026-07"
   const period = String(req.query.period || "today").toLowerCase();
+  const shouldSync = req.query.sync !== "0";
+
+  let synced = false;
+  if (shouldSync && callyzer.isConfigured()) {
+    const [employee, dbCalls, leadsResult] = await Promise.all([
+      repo.findEmployeeById(tenantId, employeeId),
+      repo.listCalls(tenantId, employeeId),
+      repo.listAllLeads(tenantId, { assignedTo: employeeId }),
+    ]);
+    if (employee) {
+      synced = await callyzer.syncEmployeeCallsIfStale(tenantId, employee, {
+        dbCalls,
+        leads: leadsResult.items,
+        days: Number(req.query.days || process.env.CALLYZER_HISTORY_DAYS || 30),
+        force: req.query.force === "1",
+      });
+    }
+  }
 
   let dateWhere = "1=1";
   let params = [tenantId, employeeId];
@@ -695,6 +713,8 @@ router.get("/employee/:employeeId/callyzer/stats", requireEmployeeSelf(), asyncR
   return ok(res, {
     success: true,
     configured: true,
+    synced,
+    syncedAt: new Date().toISOString(),
     stats: {
       totalCalls,
       connectedCalls,
