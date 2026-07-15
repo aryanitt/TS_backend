@@ -412,7 +412,27 @@ router.get("/sops", asyncRoute(async (req, res) => {
   return ok(res, sops);
 }));
 
-async function loadEmployeeDashboard(tenantId, employeeId) {
+function formatDbCallsForEmployee(dbCalls, leads) {
+  const phoneIndex = callyzer.buildLeadPhoneIndex(leads);
+  return dbCalls
+    .map((c) => callyzer.attachLeadToCall(c, leads, phoneIndex))
+    .sort((a, b) => {
+      const ta = new Date(a.startedAt || a.createdAt || 0).getTime();
+      const tb = new Date(b.startedAt || b.createdAt || 0).getTime();
+      return tb - ta;
+    })
+    .slice(0, 200);
+}
+
+function scheduleBackgroundCallyzerSync(tenantId, employee, dbCalls, leads) {
+  if (!callyzer.isConfigured() || !employee) return;
+  const days = Number(process.env.CALLYZER_HISTORY_DAYS || 30);
+  callyzer.getCallsForEmployee(tenantId, employee, { dbCalls, leads, days }).catch(() => {
+    /* background sync — failures are non-blocking */
+  });
+}
+
+async function loadEmployeeDashboard(tenantId, employeeId, { syncCallyzer = false } = {}) {
   const [employee, leadsResult, tasks, followups, dbCalls, meetings, sops] = await Promise.all([
     repo.findEmployeeById(tenantId, employeeId),
     repo.listLeads(tenantId, { assignedTo: employeeId }, { page: 1, limit: 500 }),
@@ -422,14 +442,21 @@ async function loadEmployeeDashboard(tenantId, employeeId) {
     repo.listMeetings(tenantId, employeeId),
     listAllSops().catch(() => []),
   ]);
-  const calls = await callyzer.getCallsForEmployee(tenantId, employee, {
-    dbCalls,
-    leads: leadsResult.items,
-    days: Number(process.env.CALLYZER_HISTORY_DAYS || 30),
-  });
+  const leads = leadsResult.items;
+  let calls = formatDbCallsForEmployee(dbCalls, leads);
+
+  if (syncCallyzer && callyzer.isConfigured() && employee) {
+    calls = await callyzer.getCallsForEmployee(tenantId, employee, {
+      dbCalls,
+      leads,
+      days: Number(process.env.CALLYZER_HISTORY_DAYS || 30),
+    });
+  } else {
+    scheduleBackgroundCallyzerSync(tenantId, employee, dbCalls, leads);
+  }
   return {
     employee,
-    leads: leadsResult.items,
+    leads,
     tasks: tasks.slice(0, 20),
     followups: followups.slice(0, 20),
     calls: calls.slice(0, 200),
@@ -446,12 +473,14 @@ router.get("/employee/me/dashboard", requireEmployee, asyncRoute(async (req, res
   if (!employeeId) {
     return res.status(403).json({ success: false, message: "Employee account is not linked to a profile" });
   }
-  const payload = await loadEmployeeDashboard(tenant(req), employeeId);
+  const syncCallyzer = req.query.syncCallyzer === "1" || req.query.sync === "1";
+  const payload = await loadEmployeeDashboard(tenant(req), employeeId, { syncCallyzer });
   return ok(res, payload);
 }));
 
 router.get("/employee/:employeeId/dashboard", requireEmployeeSelf(), asyncRoute(async (req, res) => {
-  const payload = await loadEmployeeDashboard(tenant(req), req.params.employeeId);
+  const syncCallyzer = req.query.syncCallyzer === "1" || req.query.sync === "1";
+  const payload = await loadEmployeeDashboard(tenant(req), req.params.employeeId, { syncCallyzer });
   return ok(res, payload);
 }));
 
@@ -570,11 +599,19 @@ router.get("/employee/:employeeId/calls", requireEmployeeSelf(), asyncRoute(asyn
     repo.listCalls(tenantId, employeeId),
     repo.listLeads(tenantId, { assignedTo: employeeId }, { page: 1, limit: 500 }),
   ]);
-  const calls = await callyzer.getCallsForEmployee(tenantId, employee, {
-    dbCalls,
-    leads: leadsResult.items,
-    days: Number(req.query.days || process.env.CALLYZER_HISTORY_DAYS || 30),
-  });
+  const leads = leadsResult.items;
+  const syncCallyzer = req.query.sync !== "0";
+  let calls;
+  if (syncCallyzer) {
+    calls = await callyzer.getCallsForEmployee(tenantId, employee, {
+      dbCalls,
+      leads,
+      days: Number(req.query.days || process.env.CALLYZER_HISTORY_DAYS || 30),
+    });
+  } else {
+    calls = formatDbCallsForEmployee(dbCalls, leads);
+    scheduleBackgroundCallyzerSync(tenantId, employee, dbCalls, leads);
+  }
   return ok(res, calls);
 }));
 
