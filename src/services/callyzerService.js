@@ -554,6 +554,23 @@ async function autoCreateLeadForPhone(tenantId, employeeId, phone, name) {
   }
 }
 
+const lastEmployeeSyncAt = new Map();
+const EMPLOYEE_SYNC_MIN_INTERVAL_MS = Number(process.env.CALLYZER_SYNC_INTERVAL_MS || 15000);
+
+async function syncEmployeeCallsIfStale(tenantId, employee, { dbCalls = [], leads = [], days = 30, force = false } = {}) {
+  if (!isConfigured() || !employee) return false;
+
+  const key = `${tenantId}:${employee.id}`;
+  const now = Date.now();
+  if (!force && lastEmployeeSyncAt.get(key) && now - lastEmployeeSyncAt.get(key) < EMPLOYEE_SYNC_MIN_INTERVAL_MS) {
+    return false;
+  }
+
+  await getCallsForEmployee(tenantId, employee, { dbCalls, leads, days });
+  lastEmployeeSyncAt.set(key, now);
+  return true;
+}
+
 async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [], days = 30, maxPages = 5 } = {}) {
   if (!isConfigured() || !employee) return dbCalls;
 
@@ -714,5 +731,6 @@ module.exports = {
   getPeriodRange,
   mapEmployeeSummaryRow,
   getCallsForEmployee,
+  syncEmployeeCallsIfStale,
   verifyWebhookSecret,
 };
