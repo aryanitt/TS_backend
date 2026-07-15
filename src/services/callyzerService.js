@@ -1,5 +1,6 @@
 const { logger } = require("../config/logger");
 const pool = require("../../config/db");
+const { CALL_CONVERSATION_MIN_SEC } = require("../utils/callMetrics");
 
 const BASE_URL = (process.env.CALLYZER_API_BASE_URL || "https://api1.callyzer.co/api/v2.1").replace(/\/$/, "");
 const MIN_INTERVAL_MS = 2100;
@@ -358,7 +359,6 @@ async function fetchCallHistory({ empNumbers, days = 30, pageSize = 100, maxPage
 }
 
 const statsCache = new Map();
-const LONG_CONVERSATION_MIN_SEC = 300;
 
 function formatDurationHms(seconds) {
   const total = Number(seconds) || 0;
@@ -462,7 +462,7 @@ async function fetchLongConversationStats({ empNumbers, period = "today" }) {
     call_from: range.callFrom,
     call_to: range.callTo,
     emp_numbers: empNumbers,
-    duration_grt_than: LONG_CONVERSATION_MIN_SEC - 1,
+    duration_grt_than: CALL_CONVERSATION_MIN_SEC - 1,
   });
 
   const result = response.result && !Array.isArray(response.result) ? response.result : {};

@@ -10,6 +10,7 @@ const {
 
 const pool = require("../../config/db");
 const { tenant } = require("../services/operationalServices");
+const { buildPeriodDateFilter } = require("../utils/periodFilter");
 
 router.get("/dashboard", getIncentiveDashboard);
 
@@ -56,33 +57,26 @@ router.get("/employee/:id/cash-summary", async (req, res) => {
   try {
     const tenantId = tenant(req);
     const employeeId = req.params.id;
-    const month = req.query.month; // e.g. "2026-07"
+    const month = req.query.month;
+    const period = String(req.query.period || (month ? "month" : "month")).toLowerCase();
 
-    let query;
-    let params;
+    const periodFilter = buildPeriodDateFilter({
+      period: month ? "month" : period,
+      month,
+      column: "COALESCE(payment_at, created_at)",
+      paramOffset: 3,
+    });
 
-    if (month) {
-      query = `
-        SELECT
-          COALESCE(SUM(amount), 0) AS total,
-          COUNT(*) AS count
-        FROM cash_collections
-        WHERE tenant_id = $1
-          AND employee_id = $2
-          AND DATE_FORMAT(COALESCE(payment_at, created_at), '%Y-%m') = $3
-      `;
-      params = [tenantId, employeeId, month];
-    } else {
-      query = `
-        SELECT
-          COALESCE(SUM(amount), 0) AS total,
-          COUNT(*) AS count
-        FROM cash_collections
-        WHERE tenant_id = $1
-          AND employee_id = $2
-      `;
-      params = [tenantId, employeeId];
-    }
+    const params = [tenantId, employeeId, ...periodFilter.params];
+    const query = `
+      SELECT
+        COALESCE(SUM(amount), 0) AS total,
+        COUNT(*) AS count
+      FROM cash_collections
+      WHERE tenant_id = $1
+        AND employee_id = $2
+        AND ${periodFilter.clause}
+    `;
 
     const result = await pool.query(query, params);
     const row = result.rows[0] || {};
@@ -91,6 +85,8 @@ router.get("/employee/:id/cash-summary", async (req, res) => {
       success: true,
       employeeId,
       month: month || null,
+      period: periodFilter.period || period,
+      label: periodFilter.label,
       cashCollected: Number(row.total) || 0,
       transactionCount: Number(row.count) || 0,
     });
