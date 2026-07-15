@@ -571,7 +571,7 @@ async function syncEmployeeCallsIfStale(tenantId, employee, { dbCalls = [], lead
   return true;
 }
 
-async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [], days = 30, maxPages = 5 } = {}) {
+async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [], days = 30, maxPages = 5, limit = null } = {}) {
   if (!isConfigured() || !employee) return dbCalls;
 
   const empNumbers = employeeEmpNumbers(employee);
@@ -685,7 +685,9 @@ async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [
       const tb = new Date(b.startedAt || b.createdAt || 0).getTime();
       return tb - ta;
     });
-    return merged.slice(0, 200);
+    if (limit == null) return merged;
+    const max = Math.max(Number(limit) || 0, 1);
+    return merged.slice(0, max);
   } catch (err) {
     logger.error("Callyzer call fetch failed", { employeeId: employee.id, message: err.message });
     return dbCalls;
