@@ -181,6 +181,19 @@ const CONTACTED_LEAD_SQL = `
   )
 `;
 
+/** Open pipeline leads (assigned but not converted / closed lost). */
+function isActiveLead(lead) {
+  return !isConverted(lead) && leadStatus(lead) !== "closed lost";
+}
+
+/** SQL fragment: active/open leads for workload (matches isActiveLead). */
+const ACTIVE_LEAD_SQL = `
+  LOWER(COALESCE(l.pipeline_stage, '')) NOT IN ('converted', 'won', 'closed won')
+  AND LOWER(COALESCE(l.status, '')) NOT IN ('converted', 'won')
+  AND LOWER(COALESCE(l.pipeline_stage, '')) NOT LIKE '%won%'
+  AND LOWER(COALESCE(l.status, '')) <> 'closed lost'
+`;
+
 /** SQL fragment: employee-aligned qualified = booked + showed up. */
 const PIPELINE_QUALIFIED_LEAD_SQL = `
   (
@@ -198,6 +211,7 @@ module.exports = {
   buildLeadFunnel,
   buildStageBreakdown,
   CONTACTED_LEAD_SQL,
+  ACTIVE_LEAD_SQL,
   PIPELINE_QUALIFIED_LEAD_SQL,
   isContacted,
   isQualified,
@@ -206,4 +220,5 @@ module.exports = {
   isShowedUpStage,
   isMeeting,
   isConverted,
+  isActiveLead,
 };

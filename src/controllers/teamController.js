@@ -21,6 +21,7 @@ const {
   buildLeadFunnel,
   buildStageBreakdown,
   CONTACTED_LEAD_SQL,
+  ACTIVE_LEAD_SQL,
 } = require("../utils/leadStats");
 
 function mapLeadRow(row) {
@@ -174,7 +175,10 @@ const getEmployees = async (req, res) => {
             AND (
               LOWER(COALESCE(l.pipeline_stage, '')) IN ('converted', 'won', 'closed won')
               OR LOWER(COALESCE(l.status, '')) IN ('converted', 'won')
-            )) AS revenue
+            )) AS revenue,
+        (SELECT COUNT(*) FROM leads l
+          WHERE l.assigned_to = e.id AND l.is_deleted = 0
+            AND ${ACTIVE_LEAD_SQL.replace(/\n\s*/g, " ")}) AS active_leads
        FROM employees e
        LEFT JOIN employees m ON m.id = e.manager_id
        WHERE LOWER(COALESCE(e.status, 'active')) <> 'inactive'
