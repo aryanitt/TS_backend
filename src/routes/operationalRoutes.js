@@ -148,7 +148,9 @@ router.post("/leads", validate(createLeadSchema), asyncRoute(async (req, res) =>
 router.get("/leads", asyncRoute(async (req, res) => {
   scopeEmployeeLeadList(req);
   const page = Math.max(Number(req.query.page || 1), 1);
-  const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 200);
+  const defaultLimit = isAdminUser(req) ? 500 : 100;
+  const maxLimit = isAdminUser(req) ? 5000 : 5000;
+  const limit = Math.min(Math.max(Number(req.query.limit || defaultLimit), 1), maxLimit);
   const { items, total } = await repo.listLeads(
     tenant(req),
     {
@@ -397,8 +399,8 @@ router.delete("/employees/:id", asyncRoute(async (req, res) => {
 }));
 
 router.get("/employees/:id/leads", requireEmployeeSelf("id"), asyncRoute(async (req, res) => {
-  const { items } = await repo.listLeads(tenant(req), { assignedTo: req.params.id }, { page: 1, limit: 500 });
-  return ok(res, items);
+  const { items, total } = await repo.listAllLeads(tenant(req), { assignedTo: req.params.id });
+  return ok(res, items, { total });
 }));
 
 router.get("/employees/:id/cash-collections", requireEmployeeSelf("id"), asyncRoute(async (req, res) => {
@@ -435,7 +437,7 @@ function scheduleBackgroundCallyzerSync(tenantId, employee, dbCalls, leads) {
 async function loadEmployeeDashboard(tenantId, employeeId, { syncCallyzer = false } = {}) {
   const [employee, leadsResult, tasks, followups, dbCalls, meetings, sops] = await Promise.all([
     repo.findEmployeeById(tenantId, employeeId),
-    repo.listLeads(tenantId, { assignedTo: employeeId }, { page: 1, limit: 500 }),
+    repo.listAllLeads(tenantId, { assignedTo: employeeId }),
     repo.listTasks(tenantId, { assigneeId: employeeId, limit: 20 }),
     repo.listFollowups(tenantId, employeeId),
     repo.listCalls(tenantId, employeeId),
@@ -485,12 +487,19 @@ router.get("/employee/:employeeId/dashboard", requireEmployeeSelf(), asyncRoute(
 }));
 
 router.get("/employee/:employeeId/leads", requireEmployeeSelf(), asyncRoute(async (req, res) => {
-  const { items } = await repo.listLeads(
-    tenant(req),
-    { assignedTo: req.params.employeeId, status: req.query.status, temperature: req.query.temperature },
-    { page: 1, limit: 500 },
-  );
-  return ok(res, items);
+  const filters = {
+    assignedTo: req.params.employeeId,
+    status: req.query.status,
+    temperature: req.query.temperature,
+  };
+  if (req.query.page || req.query.limit) {
+    const page = Math.max(Number(req.query.page || 1), 1);
+    const limit = Math.min(Math.max(Number(req.query.limit || 500), 1), 5000);
+    const { items, total } = await repo.listLeads(tenant(req), filters, { page, limit });
+    return ok(res, items, { page, limit, total });
+  }
+  const { items, total } = await repo.listAllLeads(tenant(req), filters);
+  return ok(res, items, { total });
 }));
 
 router.get("/employee/:employeeId/tasks", requireEmployeeSelf(), asyncRoute(async (req, res) => {
@@ -597,7 +606,7 @@ router.get("/employee/:employeeId/calls", requireEmployeeSelf(), asyncRoute(asyn
   const [employee, dbCalls, leadsResult] = await Promise.all([
     repo.findEmployeeById(tenantId, employeeId),
     repo.listCalls(tenantId, employeeId),
-    repo.listLeads(tenantId, { assignedTo: employeeId }, { page: 1, limit: 500 }),
+    repo.listAllLeads(tenantId, { assignedTo: employeeId }),
   ]);
   const leads = leadsResult.items;
   const syncCallyzer = req.query.sync !== "0";
@@ -831,10 +840,9 @@ router.post("/webhooks/callyzer", asyncRoute(async (req, res) => {
       continue;
     }
 
-    const { items: assignedLeads } = await repo.listLeads(
+    const { items: assignedLeads } = await repo.listAllLeads(
       tenantId,
       { assignedTo: employee.id },
-      { page: 1, limit: 500 },
     );
     const phoneIndex = callyzer.buildLeadPhoneIndex(assignedLeads);
 
@@ -859,8 +867,8 @@ router.post("/webhooks/callyzer", asyncRoute(async (req, res) => {
               leadName,
               phone: clientPhone,
               source: "Callyzer",
-              pipelineStage: "Contacted",
-              status: "Contacted",
+              pipelineStage: "Conversation",
+              status: "Conversation",
               temperature: "warm",
               assignedTo: employee.id,
             }, { tenantId, autoAssign: false, actor: { actorId: `employee:${employee.id}`, actorName: employee.name, actorRole: "employee" } });

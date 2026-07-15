@@ -9,6 +9,7 @@ const {
   getEmployees,
   getEmployeeDetails,
   getEmployeeLeads,
+  getEmployeeCallyzerStats,
   createEmployee,
   updateEmployee,
   deleteEmployee,
@@ -22,6 +23,7 @@ router.get("/performance", getTeamPerformance);
 router.get("/employees", getEmployees);
 router.get("/employees/details/:id", getEmployeeDetails);
 router.get("/employees/leads", getEmployeeLeads);
+router.get("/employees/:id/callyzer-stats", getEmployeeCallyzerStats);
 router.post("/employees/create", requireAdmin, createEmployee);
 router.post("/employees/update", updateEmployee);
 router.delete("/employees/:id", requireAdmin, deleteEmployee);

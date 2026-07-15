@@ -1,5 +1,6 @@
 const pool = require("../../config/db");
 const mock = require("../data/mockFallback");
+const { PIPELINE_QUALIFIED_LEAD_SQL } = require("../utils/leadStats");
 
 const TENANT = "default";
 
@@ -44,8 +45,12 @@ const STAGE_TO_PIPELINE = {
   "new lead": "new",
   new: "new",
   attempted: "contacted",
+  conversation: "contacted",
   "call booked": "contacted",
   contacted: "contacted",
+  booked: "qualified",
+  "showed up": "qualified",
+  "showed-up": "qualified",
   qualified: "qualified",
   "proposal sent": "proposal",
   proposal: "proposal",
@@ -56,8 +61,29 @@ const STAGE_TO_PIPELINE = {
 };
 
 function mapStageToPipeline(stage) {
-  const key = String(stage || "new").toLowerCase();
-  return STAGE_TO_PIPELINE[key] || "new";
+  const key = String(stage || "new").toLowerCase().trim();
+  if (STAGE_TO_PIPELINE[key]) return STAGE_TO_PIPELINE[key];
+  const STAGE_MAP = [
+    ["closed won", "closed_won"],
+    ["converted", "closed_won"],
+    ["won", "closed_won"],
+    ["proposal sent", "proposal"],
+    ["showed up", "qualified"],
+    ["showed-up", "qualified"],
+    ["booked", "qualified"],
+    ["conversation", "contacted"],
+    ["not interested", "not_interested"],
+    ["negotiation", "negotiation"],
+    ["proposal", "proposal"],
+    ["qualified", "qualified"],
+    ["contacted", "contacted"],
+    ["attempted", "contacted"],
+    ["new", "new"],
+  ];
+  for (const [needle, id] of STAGE_MAP) {
+    if (key.includes(needle)) return id;
+  }
+  return "new";
 }
 
 function tempToPriority(temp) {
@@ -79,6 +105,11 @@ function mapLeadToPipelineColumn(row) {
     ["closed won", "closed_won"],
     ["converted", "closed_won"],
     ["won", "closed_won"],
+    ["proposal sent", "proposal"],
+    ["showed up", "qualified"],
+    ["showed-up", "qualified"],
+    ["booked", "qualified"],
+    ["conversation", "contacted"],
     ["not interested", "not_interested"],
     ["not_interested", "not_interested"],
     ["ni", "not_interested"],
@@ -86,6 +117,7 @@ function mapLeadToPipelineColumn(row) {
     ["proposal", "proposal"],
     ["qualified", "qualified"],
     ["contacted", "contacted"],
+    ["attempted", "contacted"],
     ["new", "new"],
   ];
   for (const [needle, id] of STAGE_MAP) {
@@ -261,8 +293,7 @@ async function queryLeadsStats(tenantId) {
       `SELECT
         COUNT(*) AS total_leads,
         COALESCE(SUM(expected_revenue), 0) AS pipeline_value,
-        SUM(CASE WHEN pipeline_stage IN ('Qualified','Call Booked','Proposal Sent','Negotiation','Converted')
-          OR status IN ('Qualified','Call Booked','Proposal Sent','Negotiation','Converted') THEN 1 ELSE 0 END) AS qualified,
+        SUM(CASE WHEN ${PIPELINE_QUALIFIED_LEAD_SQL.replace(/\bl\./g, "")} THEN 1 ELSE 0 END) AS qualified,
         SUM(CASE WHEN ${CONVERTED_LEAD_SQL} THEN 1 ELSE 0 END) AS conversions,
         COALESCE(SUM(CASE WHEN ${CONVERTED_LEAD_SQL} THEN expected_revenue ELSE 0 END), 0) AS revenue
        FROM leads
@@ -419,37 +450,11 @@ async function getDashboardBundle(tenantId = TENANT) {
   const empty = emptyFilterData();
 
   if (!(await dbReady())) {
-    const mockRange = {
-      kpis: [
-        { label: "Total Revenue",     value: "₹20.0L", icon: "DollarSign", trendVal: "+14.2%", sub: "MoM Gross ..." },
-        { label: "Cash Collected",    value: "₹14.3L", icon: "DollarSign", trendVal: "+18.4%", sub: "Cash Genera..." },
-        { label: "Total Leads",       value: "14",      icon: "Users",      trendVal: "+8.5%",  sub: "New Leads" },
-        { label: "Total Calls Made",  value: "30",      icon: "Phone",      trendVal: "+12.4%", sub: "Call Volume" },
-        { label: "Qualified Leads",   value: "4",       icon: "FileText",   trendVal: "+6.2%",  sub: "Qualified" },
-        { label: "Pipeline Value",    value: "₹91.3L",  icon: "DollarSign", trendVal: "+4.2%",  sub: "Target vs Ach..." },
-        { label: "Closings",          value: "2",       icon: "Trophy",     trendVal: "+10.5%", sub: "Closed Won" },
-      ],
-      leaderboard: [
-        { name: "Sourav",      leads: 13, resp: "2h 10m", qualR: "31%", convR: "15%", conv: 2, rev: "₹20.0L" },
-        { name: "Ritik Verma", leads: 1,  resp: "3h 40m", qualR: "0%",  convR: "0%",  conv: 0, rev: "₹0" },
-        { name: "Aryan",       leads: 0,  resp: "—",      qualR: "0%",  convR: "0%",  conv: 0, rev: "₹0" },
-      ],
-      metrics: { pickup: 78, qualification: 29, conversion: 15 },
-      insights: [
-        { type: "check", title: "2 deals closed this period", body: "Sourav converted 2 warm leads successfully." },
-        { type: "warn",  title: "1 lead needs follow-up", body: "Ritik's warm lead has not been contacted yet." },
-      ],
-      activity: [
-        { type: "check", text: "Sourav converted 2 deals this week" },
-        { type: "check", text: "Ritik assigned 1 warm lead" },
-        { type: "warn",  text: "Aryan has no active leads" },
-      ],
-    };
     return {
-      source: "mock",
-      filterData: { today: mockRange, week: mockRange, month: mockRange },
-      revenueSeries: mock.revenueSeries || [],
-      aiInsights: mock.aiInsights || [],
+      source: "empty",
+      filterData: empty,
+      revenueSeries: [],
+      aiInsights: [],
       success: true,
     };
   }
@@ -650,12 +655,13 @@ async function getPipelineLeads(tenantId = TENANT) {
 
 async function updatePipelineLeadStage(leadId, stage, tenantId = TENANT) {
   const stageToDb = {
-    new: "New Lead",
-    contacted: "Attempted",
-    qualified: "Qualified",
+    new: "Conversation",
+    contacted: "Conversation",
+    qualified: "Booked",
     proposal: "Proposal Sent",
-    negotiation: "Negotiation",
+    negotiation: "Proposal Sent",
     closed_won: "Converted",
+    not_interested: "Not Interested",
   };
   const dbStage = stageToDb[stage] || stage;
 
@@ -668,21 +674,21 @@ async function updatePipelineLeadStage(leadId, stage, tenantId = TENANT) {
 }
 
 async function getReportsBundle(tenantId = TENANT) {
-  const fallback = {
+  const empty = {
     kpis: {
-      totalRevenue: { value: "₹1.24Cr", growth: "+18.4%", comparison: "vs last month" },
-      conversionRate: { value: "24.6%", growth: "+3.1%", comparison: "vs last month" },
-      momGrowth: { value: "12.8%", growth: "+2.4%", comparison: "vs last month" },
-      forecastQ3: { value: "₹1.62Cr", growth: "+22%", comparison: "vs last month" },
+      totalRevenue: { value: "₹0", growth: "—", comparison: "vs last month" },
+      conversionRate: { value: "0%", growth: "—", comparison: "vs last month" },
+      momGrowth: { value: "0%", growth: "—", comparison: "vs last month" },
+      forecastQ3: { value: "₹0", growth: "—", comparison: "vs last month" },
     },
-    aiSummary: mock.aiInsights.map((i) => i.body),
-    revenueAnalytics: mock.revenueSeries.map((r) => ({ month: r.month, revenue: r.revenue * 10000 })),
+    aiSummary: [],
+    revenueAnalytics: [],
     leadSources: [],
     conversionByStage: [],
     team: [],
   };
 
-  if (!(await dbReady())) return { source: "mock", ...fallback, success: true };
+  if (!(await dbReady())) return { source: "empty", ...empty, success: true };
 
   try {
     const stats = await queryLeadsStats(tenantId, "month");
@@ -714,32 +720,29 @@ async function getReportsBundle(tenantId = TENANT) {
     const dbInsights = await getAiInsightsFromDb(tenantId, "reports");
 
     return {
-      source: total > 0 ? "database" : "mock",
+      source: total > 0 ? "database" : "empty",
       success: true,
       kpis: {
-        totalRevenue: { value: formatINR(revenue), growth: "+18.4%", comparison: "vs last month" },
-        conversionRate: { value: `${total ? Math.round((conversions / total) * 100) : 0}%`, growth: "+3.1%", comparison: "vs last month" },
-        momGrowth: { value: "12.8%", growth: "+2.4%", comparison: "vs last month" },
-        forecastQ3: { value: formatINR(revenue * 1.3), growth: "+22%", comparison: "vs last month" },
+        totalRevenue: { value: formatINR(revenue), growth: "—", comparison: "vs last month" },
+        conversionRate: { value: `${total ? Math.round((conversions / total) * 100) : 0}%`, growth: "—", comparison: "vs last month" },
+        momGrowth: { value: "0%", growth: "—", comparison: "vs last month" },
+        forecastQ3: { value: formatINR(revenue * 1.3), growth: "—", comparison: "vs last month" },
       },
-      aiSummary: dbInsights.length ? dbInsights.map((i) => i.body || i.title) : fallback.aiSummary,
-      revenueAnalytics: mock.revenueSeries.map((r) => ({ month: r.month, revenue: r.revenue * 10000 })),
-      leadSources: sources.rows.length ? sources.rows.map((r) => ({ source: r.source || "Unknown", leads: Number(r.leads) })) : [
-        { source: "Website", leads: 340 },
-        { source: "LinkedIn", leads: 280 },
-      ],
-      conversionByStage: stages.rows.length ? stages.rows.map((r) => ({ stage: r.stage, count: Number(r.count) })) : fallback.conversionByStage,
+      aiSummary: dbInsights.length ? dbInsights.map((i) => i.body || i.title) : [],
+      revenueAnalytics: [],
+      leadSources: sources.rows.map((r) => ({ source: r.source || "Unknown", leads: Number(r.leads) })),
+      conversionByStage: stages.rows.map((r) => ({ stage: r.stage, count: Number(r.count) })),
       team: team.rows.map((r) => ({
         id: r.id,
         name: r.name,
         revenue: formatINR(r.revenue),
         dealsClosed: Number(r.deals) || 0,
-        conversionRate: `${Math.round(Math.random() * 10 + 18)}%`,
+        conversionRate: `${total ? Math.round(((Number(r.deals) || 0) / total) * 100) : 0}%`,
       })),
     };
   } catch (err) {
     console.error("getReportsBundle error:", err.message);
-    return { source: "mock", ...fallback, success: true };
+    return { source: "empty", ...empty, success: true };
   }
 }
 
@@ -774,14 +777,14 @@ async function saveSettings(tenantId, payload) {
 }
 
 async function listServices(tenantId = TENANT) {
-  if (!(await dbReady())) return { source: "mock", services: mock.SERVICES, success: true };
+  if (!(await dbReady())) return { source: "empty", services: [], success: true };
 
   try {
     const result = await pool.query(
       `SELECT * FROM services WHERE tenant_id = $1 ORDER BY created_at DESC`,
       [tenantId],
     );
-    if (!result.rows.length) return { source: "mock", services: mock.SERVICES, success: true };
+    if (!result.rows.length) return { source: "empty", services: [], success: true };
 
     const services = result.rows.map((r) => ({
       ...((typeof r.metadata === "string" ? JSON.parse(r.metadata) : r.metadata) || {}),
@@ -801,7 +804,7 @@ async function listServices(tenantId = TENANT) {
     }));
     return { source: "database", services, success: true };
   } catch {
-    return { source: "mock", services: mock.SERVICES, success: true };
+    return { source: "empty", services: [], success: true };
   }
 }
 
@@ -822,7 +825,7 @@ async function createService(tenantId, data) {
 }
 
 async function listForms(tenantId = TENANT) {
-  if (!(await dbReady())) return { source: "mock", forms: mock.FORMS, success: true };
+  if (!(await dbReady())) return { source: "empty", forms: [], success: true };
 
   try {
     const result = await pool.query(
@@ -843,7 +846,7 @@ async function listForms(tenantId = TENANT) {
     }));
     return { source: "database", forms, success: true };
   } catch {
-    return { source: "mock", forms: mock.FORMS, success: true };
+    return { source: "empty", forms: [], success: true };
   }
 }
 
@@ -949,7 +952,8 @@ async function getIncentivesData(tenantId = TENANT, month) {
         ),
         pool.query(
           `SELECT employee_id, COUNT(*) AS total_calls,
-             SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END) AS connected_calls
+             SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END) AS connected_calls,
+             SUM(CASE WHEN duration_sec >= 300 THEN 1 ELSE 0 END) AS conversations_5min_plus
            FROM employee_calls
            WHERE tenant_id = $1 AND DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = $2
            GROUP BY employee_id`,
@@ -965,11 +969,16 @@ async function getIncentivesData(tenantId = TENANT, month) {
         pool.query(
           `SELECT assigned_to AS employee_id,
              COUNT(*) AS total_leads,
-             SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN
-                   ('qualified','call booked','proposal sent','negotiation',
-                    'converted','closed won','showed up','booked')
-                 OR   LOWER(COALESCE(status,''))  IN ('qualified','warm','booked')
+             SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('booked','call booked','showed up','showed_up')
+                 OR LOWER(REPLACE(COALESCE(pipeline_stage,''), '_', ' ')) LIKE '%showed up%'
+                 OR LOWER(REPLACE(COALESCE(pipeline_stage,''), '_', ' ')) LIKE '%show up%'
+                 OR LOWER(COALESCE(status,'')) IN ('booked','showed up','show up')
+                 OR LOWER(REPLACE(COALESCE(status,''), '_', ' ')) LIKE '%showed up%'
+                 OR LOWER(REPLACE(COALESCE(status,''), '_', ' ')) LIKE '%show up%'
                  THEN 1 ELSE 0 END) AS qualified_leads,
+             SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('booked','call booked')
+                 OR LOWER(COALESCE(status,'')) IN ('booked')
+                 THEN 1 ELSE 0 END) AS booked_leads,
              SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('converted','won','closed won')
                  OR   LOWER(COALESCE(status,''))  IN ('converted','won')
                  THEN 1 ELSE 0 END) AS converted_leads
@@ -992,7 +1001,8 @@ async function getIncentivesData(tenantId = TENANT, month) {
       callsRes.rows.forEach(r => {
         callsMap[r.employee_id] = {
           total: Number(r.total_calls) || 0,
-          connected: Number(r.connected_calls) || 0
+          connected: Number(r.connected_calls) || 0,
+          conversations5Min: Number(r.conversations_5min_plus) || 0,
         };
       });
 
@@ -1004,6 +1014,7 @@ async function getIncentivesData(tenantId = TENANT, month) {
         leadsMap[r.employee_id] = {
           total: Number(r.total_leads) || 0,
           qualified: Number(r.qualified_leads) || 0,
+          booked: Number(r.booked_leads) || 0,
           converted: Number(r.converted_leads) || 0
         };
       });
@@ -1012,8 +1023,8 @@ async function getIncentivesData(tenantId = TENANT, month) {
       cashRes.rows.forEach(r => { cashMap[r.employee_id] = Number(r.total_cash) || 0; });
 
       teammates = empRes.rows.map((e) => {
-        const empCalls = callsMap[e.id] || { total: 0, connected: 0 };
-        const empLeads = leadsMap[e.id] || { total: 0, qualified: 0, converted: 0 };
+        const empCalls = callsMap[e.id] || { total: 0, connected: 0, conversations5Min: 0 };
+        const empLeads = leadsMap[e.id] || { total: 0, qualified: 0, booked: 0, converted: 0 };
 
         const pickupRate = empCalls.total > 0 ? Math.min(100, Math.round((empCalls.connected / empCalls.total) * 100)) : 0;
         const qualificationRate = empLeads.total > 0 ? Math.min(100, Math.round((empLeads.qualified / empLeads.total) * 100)) : 0;
@@ -1027,11 +1038,11 @@ async function getIncentivesData(tenantId = TENANT, month) {
           role: e.role || e.department || "Sales Manager",
           department: e.department || "Sales & Growth",
           salary: e.salary || 0,
-          callsCompleted: empCalls.total,
+          callsCompleted: empCalls.conversations5Min || empCalls.total,
           callsTarget: e.call_target || 50,
           qualifiedLeads: empLeads.qualified,
           qualifiedTarget: e.qualified_lead_target || 20,
-          meetingsScheduled: meetingsMap[e.id] || 0,
+          meetingsScheduled: empLeads.booked || meetingsMap[e.id] || 0,
           meetingsTarget: e.meeting_target || 15,
           cashCollected: cashMap[e.id] || 0,
           cashTarget: e.cash_target || 100000,
@@ -1131,10 +1142,12 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
     pool.query(
       `SELECT
          COUNT(*)                                                                         AS total_leads,
-         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN
-               ('qualified','call booked','proposal sent','negotiation',
-                'converted','closed won','showed up','booked')
-             OR   LOWER(COALESCE(status,''))  IN ('qualified','warm','booked')
+         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('booked','call booked','showed up','showed_up')
+             OR LOWER(REPLACE(COALESCE(pipeline_stage,''), '_', ' ')) LIKE '%showed up%'
+             OR LOWER(REPLACE(COALESCE(pipeline_stage,''), '_', ' ')) LIKE '%show up%'
+             OR LOWER(COALESCE(status,'')) IN ('booked','showed up','show up')
+             OR LOWER(REPLACE(COALESCE(status,''), '_', ' ')) LIKE '%showed up%'
+             OR LOWER(REPLACE(COALESCE(status,''), '_', ' ')) LIKE '%show up%'
              THEN 1 ELSE 0 END)                                                          AS qualified_leads,
          SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('converted','won','closed won')
              OR   LOWER(COALESCE(status,''))  IN ('converted','won')

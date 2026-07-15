@@ -315,7 +315,9 @@ const getEmployeeDetails = async (req, res) => {
     const stats = computeLeadStats(leads);
     const totalLeads = stats.totalLeads || 0;
     const conversionRate = totalLeads ? Number(((stats.converted / totalLeads) * 100).toFixed(1)) : 0;
-    const qualificationRate = totalLeads ? Math.round((stats.qualified / totalLeads) * 100) : 0;
+    const qualificationRate = totalLeads
+      ? Math.round((stats.pipelineQualified / totalLeads) * 100)
+      : 0;
     const pickupRate = totalLeads ? Math.round((stats.contacted / totalLeads) * 100) : 0;
     const followUpQuality = totalLeads
       ? Math.max(0, Math.min(99, Math.round(100 - (stats.followUps / totalLeads) * 100)))
@@ -328,6 +330,23 @@ const getEmployeeDetails = async (req, res) => {
       [id],
     );
     const cashTotal = Number(cashResult.rows[0]?.total) || 0;
+
+    const callsResult = await pool.query(
+      `SELECT
+         COUNT(*) AS total_calls,
+         SUM(CASE WHEN duration_sec >= 300 THEN 1 ELSE 0 END) AS conversations_5min_plus,
+         SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END) AS connected_calls
+       FROM employee_calls
+       WHERE tenant_id = 'default' AND employee_id = $1`,
+      [id],
+    );
+    const callsRow = callsResult.rows[0] || {};
+    const conversations5Min = Number(callsRow.conversations_5min_plus) || 0;
+    const totalCalls = Number(callsRow.total_calls) || 0;
+    const connectedCalls = Number(callsRow.connected_calls) || 0;
+    const callPickupRate = totalCalls > 0
+      ? Math.min(100, Math.round((connectedCalls / totalCalls) * 100))
+      : 0;
 
     const cashRecordsResult = await pool.query(
       `SELECT cc.*, l.lead_name, l.company_name
@@ -361,14 +380,15 @@ const getEmployeeDetails = async (req, res) => {
           createdAt: row.created_at,
         })),
         achieved: {
-          calls: stats.contacted,
-          qualifiedLeads: stats.qualified,
-          meetings: stats.totalMeetings,
+          calls: conversations5Min,
+          totalCalls,
+          qualifiedLeads: stats.pipelineQualified,
+          meetings: stats.booked,
           cash: cashTotal,
         },
         performance: {
           responseTimeMin: 1.8,
-          pickupRate,
+          pickupRate: callPickupRate,
           qualificationRate,
           objectionHandling: Math.min(99, Math.round(qualificationRate * 0.95) || 0),
           conversionRate,
@@ -820,12 +840,67 @@ const getChartData = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+const getEmployeeCallyzerStats = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const month = req.query.month;
+    const period = String(req.query.period || "month").toLowerCase();
+
+    let dateWhere = "1=1";
+    const params = ["default", id];
+
+    if (month) {
+      dateWhere = "DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = $3";
+      params.push(month);
+    } else if (period === "today") {
+      dateWhere = "DATE(COALESCE(started_at, created_at)) = CURRENT_DATE()";
+    } else if (period === "month") {
+      dateWhere = "DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = DATE_FORMAT(CURRENT_DATE(), '%Y-%m')";
+    }
+
+    const result = await pool.query(
+      `SELECT
+         COUNT(*) AS total_calls,
+         SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END) AS connected_calls,
+         SUM(CASE WHEN duration_sec >= 300 THEN 1 ELSE 0 END) AS conversations_5min_plus,
+         SUM(duration_sec) AS total_duration_sec
+       FROM employee_calls
+       WHERE tenant_id = $1 AND employee_id = $2 AND ${dateWhere}`,
+      params,
+    );
+
+    const row = result.rows[0] || {};
+    const totalCalls = Number(row.total_calls) || 0;
+    const connectedCalls = Number(row.connected_calls) || 0;
+    const conversations5MinPlus = Number(row.conversations_5min_plus) || 0;
+    const totalDurationSec = Number(row.total_duration_sec) || 0;
+
+    res.json({
+      success: true,
+      configured: true,
+      stats: {
+        totalCalls,
+        connectedCalls,
+        conversations5MinPlus,
+        pickupRate: totalCalls > 0 ? Math.round((connectedCalls / totalCalls) * 100) : 0,
+        avgDurationSec: connectedCalls > 0 ? Math.round(totalDurationSec / connectedCalls) : 0,
+      },
+      period: month || period,
+    });
+  } catch (error) {
+    console.error("Employee Callyzer stats error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = {
   getTeamDashboard,
   getTeamPerformance,
   getEmployees,
   getEmployeeDetails,
-  getEmployeeLeads,      // ← new name
+  getEmployeeLeads,
+  getEmployeeCallyzerStats,
   createEmployee,
   updateEmployee,
   deleteEmployee,
