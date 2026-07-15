@@ -474,6 +474,25 @@ async function listLeads(tenantId, filters = {}, { page = 1, limit = 50 } = {}) 
   };
 }
 
+/** Paginate through listLeads until all matching rows are loaded (employee dashboards were capped at 500). */
+async function listAllLeads(tenantId, filters = {}, { pageSize = 500, maxPages = 40 } = {}) {
+  const all = [];
+  let page = 1;
+  let total = 0;
+
+  while (page <= maxPages) {
+    const result = await listLeads(tenantId, filters, { page, limit: pageSize });
+    total = result.total;
+    if (!result.items.length) break;
+    all.push(...result.items);
+    if (all.length >= total) break;
+    if (result.items.length < pageSize) break;
+    page += 1;
+  }
+
+  return { items: all, total: total || all.length };
+}
+
 async function updateLead(tenantId, leadId, patch) {
   const fields = [];
   const params = [tenantId, leadId];
@@ -1495,6 +1514,7 @@ module.exports = {
   findLeadById,
   findLeadByPhone,
   listLeads,
+  listAllLeads,
   updateLead,
   softDeleteLead,
   touchLeadActivity,

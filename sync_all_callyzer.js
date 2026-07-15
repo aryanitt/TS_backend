@@ -21,7 +21,7 @@ async function run() {
     console.log(`Syncing call history from Callyzer for ${employee.name}...`);
     try {
       const dbCalls = await repo.listCalls("default", employee.id);
-      const leadsResult = await repo.listLeads("default", { assignedTo: employee.id }, { page: 1, limit: 500 });
+      const leadsResult = await repo.listAllLeads("default", { assignedTo: employee.id });
       
       const calls = await callyzer.getCallsForEmployee("default", employee, {
         dbCalls,

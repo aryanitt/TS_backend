@@ -148,7 +148,9 @@ router.post("/leads", validate(createLeadSchema), asyncRoute(async (req, res) =>
 router.get("/leads", asyncRoute(async (req, res) => {
   scopeEmployeeLeadList(req);
   const page = Math.max(Number(req.query.page || 1), 1);
-  const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 200);
+  const defaultLimit = isAdminUser(req) ? 500 : 100;
+  const maxLimit = isAdminUser(req) ? 5000 : 5000;
+  const limit = Math.min(Math.max(Number(req.query.limit || defaultLimit), 1), maxLimit);
   const { items, total } = await repo.listLeads(
     tenant(req),
     {
@@ -397,8 +399,8 @@ router.delete("/employees/:id", asyncRoute(async (req, res) => {
 }));
 
 router.get("/employees/:id/leads", requireEmployeeSelf("id"), asyncRoute(async (req, res) => {
-  const { items } = await repo.listLeads(tenant(req), { assignedTo: req.params.id }, { page: 1, limit: 500 });
-  return ok(res, items);
+  const { items, total } = await repo.listAllLeads(tenant(req), { assignedTo: req.params.id });
+  return ok(res, items, { total });
 }));
 
 router.get("/employees/:id/cash-collections", requireEmployeeSelf("id"), asyncRoute(async (req, res) => {
@@ -412,24 +414,51 @@ router.get("/sops", asyncRoute(async (req, res) => {
   return ok(res, sops);
 }));
 
-async function loadEmployeeDashboard(tenantId, employeeId) {
+function formatDbCallsForEmployee(dbCalls, leads) {
+  const phoneIndex = callyzer.buildLeadPhoneIndex(leads);
+  return dbCalls
+    .map((c) => callyzer.attachLeadToCall(c, leads, phoneIndex))
+    .sort((a, b) => {
+      const ta = new Date(a.startedAt || a.createdAt || 0).getTime();
+      const tb = new Date(b.startedAt || b.createdAt || 0).getTime();
+      return tb - ta;
+    })
+    .slice(0, 200);
+}
+
+function scheduleBackgroundCallyzerSync(tenantId, employee, dbCalls, leads) {
+  if (!callyzer.isConfigured() || !employee) return;
+  const days = Number(process.env.CALLYZER_HISTORY_DAYS || 30);
+  callyzer.getCallsForEmployee(tenantId, employee, { dbCalls, leads, days }).catch(() => {
+    /* background sync — failures are non-blocking */
+  });
+}
+
+async function loadEmployeeDashboard(tenantId, employeeId, { syncCallyzer = false } = {}) {
   const [employee, leadsResult, tasks, followups, dbCalls, meetings, sops] = await Promise.all([
     repo.findEmployeeById(tenantId, employeeId),
-    repo.listLeads(tenantId, { assignedTo: employeeId }, { page: 1, limit: 500 }),
+    repo.listAllLeads(tenantId, { assignedTo: employeeId }),
     repo.listTasks(tenantId, { assigneeId: employeeId, limit: 20 }),
     repo.listFollowups(tenantId, employeeId),
     repo.listCalls(tenantId, employeeId),
     repo.listMeetings(tenantId, employeeId),
     listAllSops().catch(() => []),
   ]);
-  const calls = await callyzer.getCallsForEmployee(tenantId, employee, {
-    dbCalls,
-    leads: leadsResult.items,
-    days: Number(process.env.CALLYZER_HISTORY_DAYS || 30),
-  });
+  const leads = leadsResult.items;
+  let calls = formatDbCallsForEmployee(dbCalls, leads);
+
+  if (syncCallyzer && callyzer.isConfigured() && employee) {
+    calls = await callyzer.getCallsForEmployee(tenantId, employee, {
+      dbCalls,
+      leads,
+      days: Number(process.env.CALLYZER_HISTORY_DAYS || 30),
+    });
+  } else {
+    scheduleBackgroundCallyzerSync(tenantId, employee, dbCalls, leads);
+  }
   return {
     employee,
-    leads: leadsResult.items,
+    leads,
     tasks: tasks.slice(0, 20),
     followups: followups.slice(0, 20),
     calls: calls.slice(0, 200),
@@ -446,22 +475,31 @@ router.get("/employee/me/dashboard", requireEmployee, asyncRoute(async (req, res
   if (!employeeId) {
     return res.status(403).json({ success: false, message: "Employee account is not linked to a profile" });
   }
-  const payload = await loadEmployeeDashboard(tenant(req), employeeId);
+  const syncCallyzer = req.query.syncCallyzer === "1" || req.query.sync === "1";
+  const payload = await loadEmployeeDashboard(tenant(req), employeeId, { syncCallyzer });
   return ok(res, payload);
 }));
 
 router.get("/employee/:employeeId/dashboard", requireEmployeeSelf(), asyncRoute(async (req, res) => {
-  const payload = await loadEmployeeDashboard(tenant(req), req.params.employeeId);
+  const syncCallyzer = req.query.syncCallyzer === "1" || req.query.sync === "1";
+  const payload = await loadEmployeeDashboard(tenant(req), req.params.employeeId, { syncCallyzer });
   return ok(res, payload);
 }));
 
 router.get("/employee/:employeeId/leads", requireEmployeeSelf(), asyncRoute(async (req, res) => {
-  const { items } = await repo.listLeads(
-    tenant(req),
-    { assignedTo: req.params.employeeId, status: req.query.status, temperature: req.query.temperature },
-    { page: 1, limit: 500 },
-  );
-  return ok(res, items);
+  const filters = {
+    assignedTo: req.params.employeeId,
+    status: req.query.status,
+    temperature: req.query.temperature,
+  };
+  if (req.query.page || req.query.limit) {
+    const page = Math.max(Number(req.query.page || 1), 1);
+    const limit = Math.min(Math.max(Number(req.query.limit || 500), 1), 5000);
+    const { items, total } = await repo.listLeads(tenant(req), filters, { page, limit });
+    return ok(res, items, { page, limit, total });
+  }
+  const { items, total } = await repo.listAllLeads(tenant(req), filters);
+  return ok(res, items, { total });
 }));
 
 router.get("/employee/:employeeId/tasks", requireEmployeeSelf(), asyncRoute(async (req, res) => {
@@ -568,13 +606,21 @@ router.get("/employee/:employeeId/calls", requireEmployeeSelf(), asyncRoute(asyn
   const [employee, dbCalls, leadsResult] = await Promise.all([
     repo.findEmployeeById(tenantId, employeeId),
     repo.listCalls(tenantId, employeeId),
-    repo.listLeads(tenantId, { assignedTo: employeeId }, { page: 1, limit: 500 }),
+    repo.listAllLeads(tenantId, { assignedTo: employeeId }),
   ]);
-  const calls = await callyzer.getCallsForEmployee(tenantId, employee, {
-    dbCalls,
-    leads: leadsResult.items,
-    days: Number(req.query.days || process.env.CALLYZER_HISTORY_DAYS || 30),
-  });
+  const leads = leadsResult.items;
+  const syncCallyzer = req.query.sync !== "0";
+  let calls;
+  if (syncCallyzer) {
+    calls = await callyzer.getCallsForEmployee(tenantId, employee, {
+      dbCalls,
+      leads,
+      days: Number(req.query.days || process.env.CALLYZER_HISTORY_DAYS || 30),
+    });
+  } else {
+    calls = formatDbCallsForEmployee(dbCalls, leads);
+    scheduleBackgroundCallyzerSync(tenantId, employee, dbCalls, leads);
+  }
   return ok(res, calls);
 }));
 
@@ -794,10 +840,9 @@ router.post("/webhooks/callyzer", asyncRoute(async (req, res) => {
       continue;
     }
 
-    const { items: assignedLeads } = await repo.listLeads(
+    const { items: assignedLeads } = await repo.listAllLeads(
       tenantId,
       { assignedTo: employee.id },
-      { page: 1, limit: 500 },
     );
     const phoneIndex = callyzer.buildLeadPhoneIndex(assignedLeads);
 
@@ -822,8 +867,8 @@ router.post("/webhooks/callyzer", asyncRoute(async (req, res) => {
               leadName,
               phone: clientPhone,
               source: "Callyzer",
-              pipelineStage: "Contacted",
-              status: "Contacted",
+              pipelineStage: "Conversation",
+              status: "Conversation",
               temperature: "warm",
               assignedTo: employee.id,
             }, { tenantId, autoAssign: false, actor: { actorId: `employee:${employee.id}`, actorName: employee.name, actorRole: "employee" } });

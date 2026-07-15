@@ -8,10 +8,10 @@ const getReportsDashboard = async (req, res) => {
     kpis: bundle.kpis,
     aiSummary: bundle.aiSummary,
     goalCompletion: {
-      revenueTarget: { achieved: "1240k", target: "1500k", percentage: 83 },
-      closedDeals: { achieved: 84, target: 120, percentage: 70 },
-      qualifiedLeads: { achieved: 146, target: 180, percentage: 81 },
-      customerNps: { score: 74, target: 80, percentage: 93 },
+      revenueTarget: { achieved: "0", target: "0", percentage: 0 },
+      closedDeals: { achieved: 0, target: 0, percentage: 0 },
+      qualifiedLeads: { achieved: 0, target: 0, percentage: 0 },
+      customerNps: { score: 0, target: 0, percentage: 0 },
     },
   });
 };

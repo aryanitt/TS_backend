@@ -62,12 +62,41 @@ function isMeeting(lead) {
   return meetingKeys.some((k) => stage.includes(k) || status.includes(k)) || isConverted(lead);
 }
 
+/** Employee pipeline: Booked + Showed up (not warm/contacted leads). */
+function isBookedStage(lead) {
+  const stage = leadStage(lead);
+  const status = leadStatus(lead);
+  return stage.includes("booked") || stage.includes("call booked") || status.includes("booked");
+}
+
+function isShowedUpStage(lead) {
+  const stage = leadStage(lead);
+  const status = leadStatus(lead);
+  const normalizedStage = stage.replace(/_/g, " ");
+  const normalizedStatus = status.replace(/_/g, " ");
+  return (
+    stage === "showed_up"
+    || normalizedStage.includes("showed up")
+    || normalizedStage.includes("show up")
+    || normalizedStatus.includes("showed up")
+    || normalizedStatus.includes("show up")
+  );
+}
+
+function isPipelineQualified(lead) {
+  return isBookedStage(lead) || isShowedUpStage(lead);
+}
+
 function computeLeadStats(leads = []) {
   const list = Array.isArray(leads) ? leads : [];
   const convertedLeads = list.filter(isConverted);
+  const pipelineQualified = list.filter(isPipelineQualified).length;
   return {
     totalLeads: list.length,
     qualified: list.filter(isQualified).length,
+    pipelineQualified,
+    booked: list.filter(isBookedStage).length,
+    showedUp: list.filter(isShowedUpStage).length,
     totalMeetings: list.filter(isMeeting).length,
     converted: convertedLeads.length,
     revenue: convertedLeads.reduce(
@@ -89,6 +118,7 @@ function mapLeadKanbanStage(lead) {
   if (stage.includes("negotiation") || status.includes("negotiation")) return "negotiation";
   if (stage.includes("proposal") || status.includes("proposal")) return "proposal";
   if (stage === "converted" || status === "converted" || stage.includes("won")) return "converted";
+  if (isShowedUpStage(lead)) return "showed_up";
   if (stage.includes("booked") || stage.includes("call booked")) return "booked";
   if (stage.includes("contacted") || stage.includes("qualified")) return "contacted";
   if (stage.includes("attempted") || status.includes("attempted")) return "attempted";
@@ -101,6 +131,7 @@ const STAGE_BREAKDOWN = [
   { id: "attempted", label: "Attempted" },
   { id: "contacted", label: "Contacted" },
   { id: "booked", label: "Booked" },
+  { id: "showed_up", label: "Showed up" },
   { id: "proposal", label: "Proposal" },
   { id: "negotiation", label: "Negotiation" },
   { id: "converted", label: "Converted" },
@@ -124,7 +155,7 @@ function buildLeadFunnel(stats) {
   return [
     { name: "Assigned", value: stats.totalLeads || 0 },
     { name: "Contacted", value: stats.contacted || 0 },
-    { name: "Qualified", value: stats.qualified || 0 },
+    { name: "Qualified", value: stats.pipelineQualified ?? stats.qualified ?? 0 },
     { name: "Meeting", value: stats.totalMeetings || 0 },
     { name: "Converted", value: stats.converted || 0 },
   ];
@@ -150,13 +181,29 @@ const CONTACTED_LEAD_SQL = `
   )
 `;
 
+/** SQL fragment: employee-aligned qualified = booked + showed up. */
+const PIPELINE_QUALIFIED_LEAD_SQL = `
+  (
+    LOWER(COALESCE(l.pipeline_stage, '')) IN ('booked', 'call booked', 'showed up', 'showed_up')
+    OR LOWER(REPLACE(COALESCE(l.pipeline_stage, ''), '_', ' ')) LIKE '%showed up%'
+    OR LOWER(REPLACE(COALESCE(l.pipeline_stage, ''), '_', ' ')) LIKE '%show up%'
+    OR LOWER(COALESCE(l.status, '')) IN ('booked', 'showed up', 'show up')
+    OR LOWER(REPLACE(COALESCE(l.status, ''), '_', ' ')) LIKE '%showed up%'
+    OR LOWER(REPLACE(COALESCE(l.status, ''), '_', ' ')) LIKE '%show up%'
+  )
+`;
+
 module.exports = {
   computeLeadStats,
   buildLeadFunnel,
   buildStageBreakdown,
   CONTACTED_LEAD_SQL,
+  PIPELINE_QUALIFIED_LEAD_SQL,
   isContacted,
   isQualified,
+  isPipelineQualified,
+  isBookedStage,
+  isShowedUpStage,
   isMeeting,
   isConverted,
 };
