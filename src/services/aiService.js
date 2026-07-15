@@ -1,6 +1,12 @@
 const pool = require("../../config/db");
 const { logger } = require("../config/logger");
 
+const DEFAULT_CALL_AI_MODEL = "gpt-4o-mini";
+
+function getCallAiModel() {
+  return process.env.OPENAI_CALL_MODEL || DEFAULT_CALL_AI_MODEL;
+}
+
 async function processCallWithAi(tenantId, callId) {
   const apiKey = process.env.OPENAI_API_KEY;
 
@@ -18,6 +24,9 @@ async function processCallWithAi(tenantId, callId) {
   let summary = "";
   let sentiment = "neutral";
   let rating = 4;
+  let temperature = "Warm Lead";
+  let pipelineStage = "Conversation";
+  const callAiModel = getCallAiModel();
 
   if (apiKey && call.recording_url) {
     try {
@@ -51,7 +60,7 @@ async function processCallWithAi(tenantId, callId) {
       transcript = whisperData.text || "";
       logger.info("Transcription successful", { textLength: transcript.length });
 
-      logger.info("Analyzing call transcript with GPT-4...");
+      logger.info("Analyzing call transcript with OpenAI", { model: callAiModel });
       const gptRes = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -59,7 +68,7 @@ async function processCallWithAi(tenantId, callId) {
           Authorization: `Bearer ${apiKey}`
         },
         body: JSON.stringify({
-          model: "gpt-4o",
+          model: callAiModel,
           response_format: { type: "json_object" },
           messages: [
             {
