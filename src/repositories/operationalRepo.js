@@ -1,6 +1,8 @@
 const pool = require("../../config/db");
+const { buildPeriodDateFilter } = require("../utils/periodFilter");
 
 const DEFAULT_TENANT_ID = "default";
+const DEFAULT_CALL_LIST_LIMIT = Number(process.env.EMPLOYEE_CALLS_MAX || 10000);
 
 function withId(row, mapper) {
   if (!row) return null;
@@ -1048,14 +1050,30 @@ async function insertCall(data) {
   return mapCall(result.rows[0]);
 }
 
-async function listCalls(tenantId, employeeId) {
+async function listCalls(tenantId, employeeId, options = {}) {
+  const period = options.period ? String(options.period).toLowerCase() : null;
+  const limit = Math.min(Math.max(Number(options.limit) || DEFAULT_CALL_LIST_LIMIT, 1), DEFAULT_CALL_LIST_LIMIT);
+  const params = [tenantId, employeeId];
+  let periodSql = "";
+
+  if (period && period !== "all") {
+    const filter = buildPeriodDateFilter({
+      period,
+      column: "COALESCE(ec.started_at, ec.created_at)",
+      paramOffset: 3,
+    });
+    periodSql = ` AND ${filter.clause}`;
+    params.push(...filter.params);
+  }
+
   const result = await pool.query(
     `SELECT ec.*, l.lead_name AS client_name, l.phone AS client_phone, l.company_name AS client_company
      FROM employee_calls ec
      LEFT JOIN leads l ON ec.lead_id = l.id
-     WHERE ec.tenant_id = $1 AND ec.employee_id = $2
-     ORDER BY ec.created_at DESC`,
-    [tenantId, employeeId],
+     WHERE ec.tenant_id = $1 AND ec.employee_id = $2${periodSql}
+     ORDER BY COALESCE(ec.started_at, ec.created_at) DESC
+     LIMIT ${limit}`,
+    params,
   );
   return result.rows.map(mapCall);
 }
