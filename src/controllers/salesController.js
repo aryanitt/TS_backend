@@ -284,7 +284,7 @@ const deleteLead = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid lead ID" });
     }
 
-    // ✅ fetch name BEFORE deleting so we can use it in logs
+    // fetch name BEFORE deleting so we can use it in logs
     const findResult = await pool.query(
       "SELECT lead_name, company_name FROM leads WHERE id=$1",
       [parseInt(id)]

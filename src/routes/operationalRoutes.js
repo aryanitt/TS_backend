@@ -902,8 +902,8 @@ router.post("/webhooks/callyzer", asyncRoute(async (req, res) => {
               leadName,
               phone: clientPhone,
               source: "Callyzer",
-              pipelineStage: "Conversation",
-              status: "Conversation",
+              pipelineStage: "Lead",
+              status: "Lead",
               temperature: "warm",
               assignedTo: employee.id,
             }, { tenantId, autoAssign: false, actor: { actorId: `employee:${employee.id}`, actorName: employee.name, actorRole: "employee" } });

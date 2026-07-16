@@ -579,7 +579,7 @@ const deleteEmployee = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid employee ID" });
     }
 
-    // ✅ fetch name BEFORE deleting so logs have the actual name
+    // fetch name BEFORE deleting so logs have the actual name
     const findResult = await pool.query(
       "SELECT name, role FROM employees WHERE id=$1",
       [parseInt(id)]

@@ -368,13 +368,23 @@ function formatDurationHms(seconds) {
   return `${h}h ${m}m ${s}s`;
 }
 
+function weekStartMonday(now = new Date()) {
+  const s = new Date(now);
+  s.setHours(0, 0, 0, 0);
+  const day = s.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  s.setDate(s.getDate() + diff);
+  return s;
+}
+
 function getPeriodRange(period) {
   const now = new Date();
   const callTo = Math.floor(now.getTime() / 1000);
   let callFrom;
 
   if (period === "week") {
-    callFrom = callTo - 7 * 86400;
+    const start = weekStartMonday(now);
+    callFrom = Math.floor(start.getTime() / 1000);
   } else if (period === "month") {
     const start = new Date(now.getFullYear(), now.getMonth(), 1);
     callFrom = Math.floor(start.getTime() / 1000);
