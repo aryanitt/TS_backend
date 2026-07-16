@@ -7,7 +7,7 @@ const {
   globalSearch,
 } = require("../controllers/activityController");
 
-// ✅ correct — no /activity prefix since app.js already adds it
+// correct — no /activity prefix since app.js already adds it
 router.get("/",                getRecentActivity);   // → /api/activity
 router.get("/notifications",   getNotifications);    // → /api/activity/notifications
 router.post("/notifications/read", markAllRead);     // → /api/activity/notifications/read

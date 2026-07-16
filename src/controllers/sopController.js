@@ -20,6 +20,7 @@ const parseJsonField = (value, fallback = []) => {
 
 const normalizeSopRow = (sop) => ({
   ...sop,
+  service: sop.service || "All Services",
   questions: parseJsonField(sop.questions, []),
   frameworks: parseJsonField(sop.frameworks, []),
   tags: parseJsonField(sop.tags, []),
@@ -34,8 +35,8 @@ async function fetchSopById(id) {
 async function insertSopRow(values) {
   const result = await pool.query(
     `INSERT INTO sops
-      (title, description, category, status, priority, department, estimated_time, script, questions, frameworks, tags, instruction_steps, attachment_url, scripts)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+      (title, description, category, status, priority, department, estimated_time, script, questions, frameworks, tags, instruction_steps, attachment_url, scripts, service)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
     values,
   );
   const insertId = result.insertId ?? result.rows?.[0]?.id;
@@ -69,6 +70,7 @@ const buildSopValues = (body) => {
     tags,
     instruction_steps,
     attachment_url,
+    service,
   } = body;
 
   if (!title?.trim()) {
@@ -117,6 +119,7 @@ const buildSopValues = (body) => {
     steps,
     attachment_url || null,
     Array.isArray(scripts) ? scripts : [],
+    service || "All Services",
   ];
 };
 
@@ -215,8 +218,9 @@ async function listAllSops() {
           instruction_steps = $12,
           attachment_url = $13,
           scripts = $14,
+          service = $15,
           updated_at = NOW()
-         WHERE id = $15`,
+         WHERE id = $16`,
         values
       );
 

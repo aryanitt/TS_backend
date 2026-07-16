@@ -19,12 +19,19 @@ async function initDatabase() {
         tags JSON DEFAULT ('[]'),
         instruction_steps JSON DEFAULT ('[]'),
         attachment_url TEXT,
+        service VARCHAR(100) DEFAULT 'All Services',
         version VARCHAR(20) DEFAULT 'v1.0',
         creator VARCHAR(100) DEFAULT 'Admin',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+
+    try {
+      await pool.query("ALTER TABLE sops ADD COLUMN service VARCHAR(100) DEFAULT 'All Services'");
+    } catch (e) {
+      // Ignore if column already exists
+    }
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS sop_comments (

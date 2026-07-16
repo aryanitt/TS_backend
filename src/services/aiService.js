@@ -25,7 +25,7 @@ async function processCallWithAi(tenantId, callId) {
   let sentiment = "neutral";
   let rating = 4;
   let temperature = "Warm Lead";
-  let pipelineStage = "Conversation";
+  let pipelineStage = "Lead";
   const callAiModel = getCallAiModel();
 
   if (apiKey && call.recording_url) {
@@ -86,7 +86,7 @@ async function processCallWithAi(tenantId, callId) {
                 "sentiment": "positive" | "neutral" | "negative",
                 "rating": 1-5,
                 "temperature": "Hot Lead" | "Warm Lead" | "Cold Lead",
-                "pipelineStage": "Conversation" | "Booked" | "Showed up" | "Proposal Sent"
+                "pipelineStage": "Lead" | "Not Pick" | "Conversation 2 min+" | "Meeting Booked" | "Meeting Done" | "Proposal Sent" | "Objection" | "Advance Paid" | "Payment Complete" | "Not Interested"
               }`
             },
             {
@@ -107,7 +107,7 @@ async function processCallWithAi(tenantId, callId) {
       sentiment = analysis.sentiment;
       rating = analysis.rating;
       temperature = analysis.temperature || "Warm Lead";
-      pipelineStage = analysis.pipelineStage || "Conversation";
+      pipelineStage = analysis.pipelineStage || "Lead";
 
     } catch (err) {
       logger.error("AI Analysis failed, falling back to simulated analysis", { error: err.message });
@@ -117,7 +117,7 @@ async function processCallWithAi(tenantId, callId) {
       sentiment = simulated.sentiment;
       rating = simulated.rating;
       temperature = simulated.temperature || "Warm Lead";
-      pipelineStage = simulated.pipelineStage || "Conversation";
+      pipelineStage = simulated.pipelineStage || "Lead";
     }
   } else {
     // Fallback to simulated high-quality analysis
@@ -127,7 +127,7 @@ async function processCallWithAi(tenantId, callId) {
     sentiment = simulated.sentiment;
     rating = simulated.rating;
     temperature = simulated.temperature || "Warm Lead";
-    pipelineStage = simulated.pipelineStage || "Conversation";
+    pipelineStage = simulated.pipelineStage || "Lead";
   }
 
   // Update call in DB

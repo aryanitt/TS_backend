@@ -2,17 +2,22 @@ const pool = require("../../config/db");
 const mock = require("../data/mockFallback");
 const { PIPELINE_QUALIFIED_LEAD_SQL } = require("../utils/leadStats");
 const { CALL_CONVERSATION_MIN_SEC } = require("../utils/callMetrics");
+const {
+  mapStageToId,
+  normalizeStageLabel,
+  ADMIN_PIPELINE_TO_DB_STAGE,
+} = require("../utils/pipelineStages");
 
 const TENANT = "default";
 
 const CONVERTED_LEAD_SQL = `
-  LOWER(COALESCE(pipeline_stage, '')) IN ('converted', 'won', 'closed won')
-  OR LOWER(COALESCE(status, '')) IN ('converted', 'won')
+  LOWER(COALESCE(pipeline_stage, '')) IN ('payment complete', 'converted', 'won', 'closed won')
+    OR LOWER(COALESCE(status, '')) IN ('payment complete', 'converted', 'won')
 `;
 
 const CONVERTED_LEAD_SQL_ALIASED = `
-  LOWER(COALESCE(l.pipeline_stage, '')) IN ('converted', 'won', 'closed won')
-  OR LOWER(COALESCE(l.status, '')) IN ('converted', 'won')
+  LOWER(COALESCE(l.pipeline_stage, '')) IN ('payment complete', 'converted', 'won', 'closed won')
+  OR LOWER(COALESCE(l.status, '')) IN ('payment complete', 'converted', 'won')
 `;
 
 function formatINR(amount) {
@@ -42,49 +47,8 @@ function rangeToDates(rangeKey) {
   return { start, end };
 }
 
-const STAGE_TO_PIPELINE = {
-  "new lead": "new",
-  new: "new",
-  attempted: "contacted",
-  conversation: "contacted",
-  "call booked": "contacted",
-  contacted: "contacted",
-  booked: "qualified",
-  "showed up": "qualified",
-  "showed-up": "qualified",
-  qualified: "qualified",
-  "proposal sent": "proposal",
-  proposal: "proposal",
-  negotiation: "negotiation",
-  converted: "closed_won",
-  "closed won": "closed_won",
-  won: "closed_won",
-};
-
-function mapStageToPipeline(stage) {
-  const key = String(stage || "new").toLowerCase().trim();
-  if (STAGE_TO_PIPELINE[key]) return STAGE_TO_PIPELINE[key];
-  const STAGE_MAP = [
-    ["closed won", "closed_won"],
-    ["converted", "closed_won"],
-    ["won", "closed_won"],
-    ["proposal sent", "proposal"],
-    ["showed up", "qualified"],
-    ["showed-up", "qualified"],
-    ["booked", "qualified"],
-    ["conversation", "contacted"],
-    ["not interested", "not_interested"],
-    ["negotiation", "negotiation"],
-    ["proposal", "proposal"],
-    ["qualified", "qualified"],
-    ["contacted", "contacted"],
-    ["attempted", "contacted"],
-    ["new", "new"],
-  ];
-  for (const [needle, id] of STAGE_MAP) {
-    if (key.includes(needle)) return id;
-  }
-  return "new";
+function mapStageToPipeline(stage, status = "") {
+  return mapStageToId(stage, status);
 }
 
 function tempToPriority(temp) {
@@ -467,7 +431,7 @@ async function getDashboardBundle(tenantId = TENANT) {
       getActivityFromDb(8),
       pool.query(
         `SELECT DATE_FORMAT(created_at, '%b') AS month,
-          COALESCE(SUM(CASE WHEN pipeline_stage = 'Converted' OR status = 'Converted' THEN expected_revenue ELSE 0 END), 0) AS revenue
+          COALESCE(SUM(CASE WHEN ${CONVERTED_LEAD_SQL.replace(/\n/g, " ")} THEN expected_revenue ELSE 0 END), 0) AS revenue
          FROM leads WHERE tenant_id = $1 AND is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
          GROUP BY DATE_FORMAT(created_at, '%Y-%m'), DATE_FORMAT(created_at, '%b')
          ORDER BY DATE_FORMAT(created_at, '%Y-%m')`,
@@ -619,7 +583,7 @@ async function getPipelineLeads(tenantId = TENANT) {
       const assigneeName = row.assignee_name || null;
       return {
       id: String(row.id),
-      stage: mapStageToPipeline(row.pipeline_stage || row.status),
+      stage: mapStageToPipeline(row.pipeline_stage || row.status, row.status),
       name: row.lead_name,
       company: row.company_name || "—",
       value: Number(row.expected_revenue) || 0,
@@ -655,16 +619,7 @@ async function getPipelineLeads(tenantId = TENANT) {
 }
 
 async function updatePipelineLeadStage(leadId, stage, tenantId = TENANT) {
-  const stageToDb = {
-    new: "Conversation",
-    contacted: "Conversation",
-    qualified: "Booked",
-    proposal: "Proposal Sent",
-    negotiation: "Proposal Sent",
-    closed_won: "Converted",
-    not_interested: "Not Interested",
-  };
-  const dbStage = stageToDb[stage] || stage;
+  const dbStage = ADMIN_PIPELINE_TO_DB_STAGE[stage] || normalizeStageLabel(stage);
 
   await pool.query(
     `UPDATE leads SET pipeline_stage = $1, status = $1, updated_at = NOW(), last_activity_at = NOW()
@@ -709,8 +664,8 @@ async function getReportsBundle(tenantId = TENANT) {
 
     const team = await pool.query(
       `SELECT e.id, e.name,
-        COALESCE(SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN l.expected_revenue ELSE 0 END), 0) AS revenue,
-        SUM(CASE WHEN l.pipeline_stage = 'Converted' OR l.status = 'Converted' THEN 1 ELSE 0 END) AS deals
+        COALESCE(SUM(CASE WHEN (${CONVERTED_LEAD_SQL_ALIASED.replace(/\n/g, " ")}) THEN l.expected_revenue ELSE 0 END), 0) AS revenue,
+        SUM(CASE WHEN (${CONVERTED_LEAD_SQL_ALIASED.replace(/\n/g, " ")}) THEN 1 ELSE 0 END) AS deals
        FROM employees e
        LEFT JOIN leads l ON l.assigned_to = e.id AND l.is_deleted = 0
        WHERE e.tenant_id = $1
@@ -1107,7 +1062,7 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
         { label: "Proposal Sent",   value: "0"  },
         { label: "Revenue",         value: "₹0" },
       ],
-      oppData: { notContacted: 0, unqualified: 0, noMeeting: 0, stuckNegotiation: 0 },
+      oppData: { notContacted: 0, noMeeting: 0, stuckPipeline: 0 },
       metrics: emptyMetrics,
     };
   }
@@ -1158,18 +1113,14 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
          SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('proposal sent','negotiation')
              OR   LOWER(COALESCE(status,''))  LIKE '%proposal%'
              THEN 1 ELSE 0 END)                                                          AS proposal_sent,
-         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('converted','won','closed won')
-             OR   LOWER(COALESCE(status,''))  IN ('converted','won')
-             THEN COALESCE(expected_revenue,0) ELSE 0 END)                               AS revenue,
-         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'new lead')) IN ('new lead','attempted')
-             AND (interactions IS NULL OR interactions = 0)
-             THEN 1 ELSE 0 END)                                                          AS not_contacted,
-         SUM(CASE WHEN LOWER(COALESCE(status,''))  IN ('not interested','unqualified')
-             THEN 1 ELSE 0 END)                                                          AS unqualified,
-         SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) = 'negotiation'
-             THEN 1 ELSE 0 END)                                                          AS stuck_negotiation
-       FROM leads l
-       WHERE ${leadsWhere}`,
+              SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'lead')) IN ('lead', 'new lead', 'not_pick', 'not pick')
+              THEN 1 ELSE 0 END)                                                          AS not_contacted,
+          SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('conversation_2min', 'conversation', 'connected')
+              THEN 1 ELSE 0 END)                                                          AS no_meeting,
+          SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('meeting_booked', 'meeting booked', 'meeting_done', 'meeting done', 'proposal_sent', 'proposal sent', 'objection')
+              THEN 1 ELSE 0 END)                                                          AS stuck_pipeline
+        FROM leads l
+        WHERE ${leadsWhere}`,
       leadsParams
     ),
     pool.query(
@@ -1193,7 +1144,6 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
   const totalCalls     = Number(callsResult.rows[0]?.total_calls     || 0);
   const connectedCalls = Number(callsResult.rows[0]?.connected_calls || 0);
   const meetingsDone   = Number(meetingsResult.rows[0]?.meetings_done || 0);
-  const meetingNotScheduled = Math.max(0, qualifiedLeads - meetingsDone);
 
   // Rates — all capped 0-100
   const pickupRate = totalCalls     > 0 ? Math.min(100, Math.round((connectedCalls / totalCalls)     * 100)) : 0;
@@ -1212,10 +1162,9 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
       { label: "Revenue",         value: formatINR(row.revenue    || 0)            },
     ],
     oppData: {
-      notContacted:     Number(row.not_contacted    || 0),
-      unqualified:      Number(row.unqualified      || 0),
-      noMeeting:        meetingNotScheduled,
-      stuckNegotiation: Number(row.stuck_negotiation || 0),
+      notContacted:  Number(row.not_contacted || 0),
+      noMeeting:     Number(row.no_meeting    || 0),
+      stuckPipeline: Number(row.stuck_pipeline || 0),
     },
     metrics: [
       { label: "Pickup Rate",        shortLabel: "Pickup",  value: pickupRate, rgb: "124,58,237", desc: "Calls answered vs dialed",   trend: `${pickupRate}% pickup` },
@@ -1233,13 +1182,11 @@ async function getOppCategoryLeads(tenantId = TENANT, options = {}) {
   let categoryWhere = "1=1";
 
   if (category === "not_contacted") {
-    categoryWhere = "LOWER(COALESCE(l.pipeline_stage, 'new lead')) = 'new lead' AND (l.interactions IS NULL OR l.interactions = 0)";
-  } else if (category === "unqualified") {
-    categoryWhere = "(LOWER(COALESCE(l.pipeline_stage, '')) = 'unqualified' OR LOWER(COALESCE(l.status, '')) IN ('not interested', 'unqualified'))";
+    categoryWhere = "LOWER(COALESCE(l.pipeline_stage, 'lead')) IN ('lead', 'new lead', 'not_pick', 'not pick')";
   } else if (category === "no_meeting") {
-    categoryWhere = "(LOWER(COALESCE(l.pipeline_stage, '')) = 'qualified' OR LOWER(COALESCE(l.status, '')) IN ('qualified', 'warm')) AND LOWER(COALESCE(l.pipeline_stage, '')) NOT IN ('meeting', 'meeting booked', 'meeting done', 'demo')";
-  } else if (category === "stuck_negotiation") {
-    categoryWhere = "LOWER(COALESCE(l.pipeline_stage, '')) = 'negotiation'";
+    categoryWhere = "LOWER(COALESCE(l.pipeline_stage, '')) IN ('conversation_2min', 'conversation', 'connected')";
+  } else if (category === "stuck_pipeline") {
+    categoryWhere = "LOWER(COALESCE(l.pipeline_stage, '')) IN ('meeting_booked', 'meeting booked', 'meeting_done', 'meeting done', 'proposal_sent', 'proposal sent', 'objection')";
   }
 
   let extraWhere = "";
