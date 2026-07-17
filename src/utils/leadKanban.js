@@ -380,6 +380,7 @@ function placeMeetingsOnKanban(map, placed, allLeads, meetings, period, showLead
 function leadFromOrphanCall(call, col = "lead") {
   const phone = call.phone || call.clientPhone || "";
   const name = call.name || call.clientName || (phone ? phone.slice(-10) : "Unknown");
+  const callAt = call.callAt || call.startedAt || call.createdAt || null;
   return {
     id: `call-${call.id}`,
     name,
@@ -388,7 +389,10 @@ function leadFromOrphanCall(call, col = "lead") {
     stage: col === "conversation_2min" ? "Conversation" : col === "not_pick" ? "Not Pick" : "Lead",
     status: col === "conversation_2min" ? "contacted" : col === "not_pick" ? "notpick" : "new",
     budget: "—",
-    last: call.date || "Today",
+    callAt,
+    startedAt: callAt,
+    date: callAt,
+    last: call.date || callAt || "Today",
     source: "Callyzer",
     _fromCall: true,
     _callId: call.id,
