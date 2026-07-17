@@ -1,6 +1,7 @@
 const { logger } = require("../config/logger");
 const pool = require("../../config/db");
 const { CALL_CONVERSATION_MIN_SEC } = require("../utils/callMetrics");
+const { parseCallyzerCallInstant } = require("../utils/appTimezone");
 
 const BASE_URL = (process.env.CALLYZER_API_BASE_URL || "https://api1.callyzer.co/api/v2.1").replace(/\/$/, "");
 const MIN_INTERVAL_MS = 2100;
@@ -136,11 +137,7 @@ function callTypeToOutcome(callType, duration) {
 }
 
 function parseCallyzerTimestamp(callDate, callTime) {
-  if (!callDate) return null;
-  const time = callTime || "00:00:00";
-  const iso = `${callDate}T${time}`;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  return parseCallyzerCallInstant(callDate, callTime);
 }
 
 function mapLogToCall(log, employeeId, leadId) {

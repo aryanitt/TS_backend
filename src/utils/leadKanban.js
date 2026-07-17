@@ -18,10 +18,6 @@ const ADVANCED_KANBAN_STAGES = new Set([
   "not_interested",
 ]);
 
-function leadName(lead) {
-  return lead?.name || lead?.leadName || lead?.lead_name || "";
-}
-
 function leadStage(lead) {
   return lead?.pipelineStage || lead?.stage || lead?.pipeline_stage || "";
 }
@@ -116,6 +112,21 @@ function buildLeadLookupIndex(leads = []) {
   return { byId, byPhone };
 }
 
+/** Match leads to calls by leadId or phone only — never by name (many leads share "Unknown"). */
+function resolveLeadByPhone(callPhone, index, leads = []) {
+  if (!callPhone) return null;
+  const key = phoneLast10(callPhone);
+  if (key) {
+    const hit = index.byPhone.get(key);
+    if (hit) return hit;
+  }
+  const list = Array.isArray(leads) ? leads : [];
+  return list.find((l) => {
+    const leadPhone = l.phone || l.clientPhone;
+    return leadPhone && phonesMatchLoose(leadPhone, callPhone);
+  }) || null;
+}
+
 function resolveLeadForCallFromIndex(call, index, leads = []) {
   if (!call) return null;
   if (call.leadId != null) {
@@ -123,18 +134,7 @@ function resolveLeadForCallFromIndex(call, index, leads = []) {
     if (byId) return byId;
   }
   const callPhone = call.phone || call.clientPhone;
-  if (callPhone) {
-    const byPhone = index.byPhone.get(phoneLast10(callPhone));
-    if (byPhone) return byPhone;
-  }
-  const callName = call.name || call.clientName;
-  if (callName && callName !== "Unknown Lead") {
-    const lower = String(callName).toLowerCase();
-    const list = Array.isArray(leads) ? leads : [];
-    const byName = list.find((l) => String(leadName(l)).toLowerCase() === lower);
-    if (byName) return byName;
-  }
-  return null;
+  return resolveLeadByPhone(callPhone, index, leads);
 }
 
 function buildPipelineKanbanIndex(allLeads = [], periodCalls = []) {
@@ -220,11 +220,13 @@ function resolveEarlyFunnelColumn(lead, periodCalls = [], options = {}) {
     outboundOnly: options.outboundOnly ?? true,
     scopeByAssignee: options.scopeByAssignee ?? false,
   };
-  const leadCalls = getLeadOutboundCalls(lead, periodCalls, contactOpts);
-  const opts = { outboundOnly: contactOpts.outboundOnly };
+  const allCalls = getCallsForLead(lead, periodCalls, {
+    scopeByAssignee: contactOpts.scopeByAssignee,
+  });
+  const outboundCalls = getLeadOutboundCalls(lead, periodCalls, contactOpts);
 
-  if (leadHasConversation2MinPlus(leadCalls, opts)) return "conversation_2min";
-  if (leadHasNotPickCall(leadCalls, opts)) return "not_pick";
+  if (leadHasConversation2MinPlus(allCalls, { outboundOnly: false })) return "conversation_2min";
+  if (leadHasNotPickCall(outboundCalls, { outboundOnly: true })) return "not_pick";
   if (isUncontactedNewLead(lead, periodCalls, {
     ...contactOpts,
     sinceAssignment: options.sinceAssignment ?? false,
@@ -233,11 +235,11 @@ function resolveEarlyFunnelColumn(lead, periodCalls = [], options = {}) {
 }
 
 function callKanbanColumn(call) {
-  if (!isOutboundCall(call)) return null;
   const sec = Number.isFinite(call?.durationSec)
     ? call.durationSec
     : parseCallDurationSeconds(call?.duration);
   if (isConversationCall(sec)) return "conversation_2min";
+  if (!isOutboundCall(call)) return null;
   if (isNotPickupByClientCall(call)) return "not_pick";
   return null;
 }
@@ -337,11 +339,11 @@ function resolveMeetingLead(meeting, allLeads = []) {
     const byId = list.find((l) => String(l.id) === String(meeting.leadId));
     if (byId) return byId;
   }
-  const meetingName = meeting.lead || meeting.title;
-  if (meetingName) {
-    const name = String(meetingName).toLowerCase();
-    const byName = list.find((l) => String(leadName(l)).toLowerCase() === name);
-    if (byName) return byName;
+  const meetingPhone = meeting.phone || meeting.leadPhone || meeting.clientPhone;
+  if (meetingPhone) {
+    const index = buildLeadLookupIndex(list);
+    const byPhone = resolveLeadByPhone(meetingPhone, index, list);
+    if (byPhone) return byPhone;
   }
   return leadFromMeeting(meeting);
 }
@@ -378,6 +380,7 @@ function placeMeetingsOnKanban(map, placed, allLeads, meetings, period, showLead
 function leadFromOrphanCall(call, col = "lead") {
   const phone = call.phone || call.clientPhone || "";
   const name = call.name || call.clientName || (phone ? phone.slice(-10) : "Unknown");
+  const callAt = call.callAt || call.startedAt || call.createdAt || null;
   return {
     id: `call-${call.id}`,
     name,
@@ -386,7 +389,10 @@ function leadFromOrphanCall(call, col = "lead") {
     stage: col === "conversation_2min" ? "Conversation" : col === "not_pick" ? "Not Pick" : "Lead",
     status: col === "conversation_2min" ? "contacted" : col === "not_pick" ? "notpick" : "new",
     budget: "—",
-    last: call.date || "Today",
+    callAt,
+    startedAt: callAt,
+    date: callAt,
+    last: call.date || callAt || "Today",
     source: "Callyzer",
     _fromCall: true,
     _callId: call.id,
@@ -407,6 +413,9 @@ function groupKanbanSyncedWithCallyzer(allLeads = [], periodCalls = [], meetings
   const { leadIndex, outboundLeadIds } = kanbanIndex;
   const scopeCallsByAssignee = options.scopeCallsByAssignee ?? false;
 
+  const getLeadCalls = (lead) => getCallsForLead(lead, periodCalls, {
+    scopeByAssignee: scopeCallsByAssignee,
+  });
   const getOutboundCalls = (lead) => getLeadOutboundCalls(lead, periodCalls, {
     outboundOnly: true,
     scopeByAssignee: scopeCallsByAssignee,
@@ -438,39 +447,43 @@ function groupKanbanSyncedWithCallyzer(allLeads = [], periodCalls = [], meetings
 
   placeMeetingsOnKanban(map, placed, allLeads, meetings, periodKey, showLead, customRange);
 
+  for (const lead of scopedVisible) {
+    if (!showLead(lead)) continue;
+    const dbStageId = mapStageToId(leadStage(lead), lead.status);
+    if (!ADVANCED_KANBAN_STAGES.has(dbStageId)) continue;
+    pushLead(dbStageId, lead);
+  }
+
   const leadsToEvaluate = new Set();
   for (const lead of scopedVisible) {
-    if (getOutboundCalls(lead).length > 0) leadsToEvaluate.add(String(lead.id));
+    if (getLeadCalls(lead).length > 0) leadsToEvaluate.add(String(lead.id));
   }
   for (const leadId of outboundLeadIds) leadsToEvaluate.add(leadId);
+  for (const call of periodCalls) {
+    const sec = Number.isFinite(call.durationSec)
+      ? call.durationSec
+      : parseCallDurationSeconds(call.duration);
+    if (!isConversationCall(sec)) continue;
+    const lead = resolveLeadForCallFromIndex(call, leadIndex, allLeads);
+    if (lead?.id) leadsToEvaluate.add(String(lead.id));
+  }
 
   for (const leadId of leadsToEvaluate) {
     const lead = leadIndex.byId.get(leadId);
     if (!lead || !showLead(lead)) continue;
-    const leadCalls = getOutboundCalls(lead);
-    const opts = { outboundOnly: true };
+    const leadCalls = getLeadCalls(lead);
+    const outboundCalls = getOutboundCalls(lead);
     let col = null;
-    if (leadHasConversation2MinPlus(leadCalls, opts)) col = "conversation_2min";
-    else if (leadHasNotPickCall(leadCalls, opts)) col = "not_pick";
+    if (leadHasConversation2MinPlus(leadCalls, { outboundOnly: false })) col = "conversation_2min";
+    else if (leadHasNotPickCall(outboundCalls, { outboundOnly: true })) col = "not_pick";
     if (col && col !== "lead") pushLead(col, lead);
   }
 
   for (const call of periodCalls) {
-    if (!isOutboundCall(call)) continue;
     const col = callKanbanColumn(call);
     if (!col) continue;
     if (resolveLeadForCallFromIndex(call, leadIndex, allLeads)) continue;
     pushLead(col, leadFromOrphanCall(call, col));
-  }
-
-  for (const lead of scopedVisible) {
-    const id = String(lead.id);
-    if (placed.has(id)) continue;
-    const dbStageId = mapStageToId(leadStage(lead), lead.status);
-    if (!ADVANCED_KANBAN_STAGES.has(dbStageId)) continue;
-    if (dbStageId === "meeting_booked" || dbStageId === "meeting_done") continue;
-    if (getOutboundCalls(lead).length === 0) continue;
-    pushLead(dbStageId, lead);
   }
 
   for (const lead of scopedVisible) {

@@ -1,5 +1,8 @@
 require("dotenv").config({ quiet: true });
 
+const { applyProcessTimezone } = require("./src/utils/appTimezone");
+applyProcessTimezone();
+
 process.on("uncaughtException", (error) => {
   console.error("[startup] uncaughtException:", error);
   process.exit(1);

@@ -1,5 +1,6 @@
 const pool = require("../../config/db");
 const { buildPeriodDateFilter } = require("../utils/periodFilter");
+const { toLocalSqlString } = require("../utils/appTimezone");
 
 const DEFAULT_TENANT_ID = "default";
 const DEFAULT_CALL_LIST_LIMIT = Number(process.env.EMPLOYEE_CALLS_MAX || 10000);
@@ -9,35 +10,6 @@ function withId(row, mapper) {
   const mapped = mapper ? mapper(row) : row;
   const id = mapped.id ?? row.id;
   return { ...mapped, id, _id: id };
-}
-
-function toLocalSqlString(val) {
-  if (!val) return null;
-  if (typeof val === "string") {
-    if (val.includes("T") && val.endsWith("Z")) {
-      const d = new Date(val);
-      if (Number.isNaN(d.getTime())) return val;
-      const year = d.getUTCFullYear();
-      const month = String(d.getUTCMonth() + 1).padStart(2, "0");
-      const date = String(d.getUTCDate()).padStart(2, "0");
-      const hours = String(d.getUTCHours()).padStart(2, "0");
-      const minutes = String(d.getUTCMinutes()).padStart(2, "0");
-      const seconds = String(d.getUTCSeconds()).padStart(2, "0");
-      return `${year}-${month}-${date}T${hours}:${minutes}:${seconds}`;
-    }
-    return val.replace(" ", "T");
-  }
-  if (val instanceof Date) {
-    if (Number.isNaN(val.getTime())) return null;
-    const year = val.getFullYear();
-    const month = String(val.getMonth() + 1).padStart(2, "0");
-    const date = String(val.getDate()).padStart(2, "0");
-    const hours = String(val.getHours()).padStart(2, "0");
-    const minutes = String(val.getMinutes()).padStart(2, "0");
-    const seconds = String(val.getSeconds()).padStart(2, "0");
-    return `${year}-${month}-${date}T${hours}:${minutes}:${seconds}`;
-  }
-  return val;
 }
 
 function mapLead(row, assignedEmployee) {
@@ -1355,17 +1327,19 @@ async function updateMeeting(tenantId, meetingId, patch) {
   return mapMeeting(result.rows[0]);
 }
 
-async function listMeetings(tenantId, employeeId) {
+async function listMeetings(tenantId, employeeId, options = {}) {
+  const limit = Math.min(Math.max(Number(options.limit) || 1000, 1), 2000);
   const result = await pool.query(
-    `SELECT * FROM meetings WHERE tenant_id = $1 AND employee_id = $2 ORDER BY scheduled_at ASC`,
+    `SELECT * FROM meetings WHERE tenant_id = $1 AND employee_id = $2 ORDER BY scheduled_at ASC LIMIT ${limit}`,
     [tenantId, employeeId],
   );
   return result.rows.map(mapMeeting);
 }
 
-async function listTenantMeetings(tenantId) {
+async function listTenantMeetings(tenantId, options = {}) {
+  const limit = Math.min(Math.max(Number(options.limit) || 1000, 1), 2000);
   const result = await pool.query(
-    `SELECT * FROM meetings WHERE tenant_id = $1 ORDER BY scheduled_at ASC`,
+    `SELECT * FROM meetings WHERE tenant_id = $1 ORDER BY scheduled_at ASC LIMIT ${limit}`,
     [tenantId],
   );
   return result.rows.map(mapMeeting);

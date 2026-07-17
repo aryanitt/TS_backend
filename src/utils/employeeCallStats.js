@@ -67,7 +67,7 @@ function callStatsAggSql(prefix = "") {
   SUM(${p}duration_sec) AS total_duration_sec,
   SUM(CASE WHEN LOWER(${p}direction) IN ('in', 'inbound') THEN ${p}duration_sec ELSE 0 END) AS incoming_duration_sec,
   SUM(CASE WHEN LOWER(${p}direction) IN ('out', 'outbound') THEN ${p}duration_sec ELSE 0 END) AS outgoing_duration_sec,
-  SUM(CASE WHEN LOWER(${p}direction) IN ('out', 'outbound', 'outgoing') AND ${p}duration_sec >= ${CALL_CONVERSATION_MIN_SEC} THEN 1 ELSE 0 END) AS conversations_5min_plus
+  SUM(CASE WHEN ${p}duration_sec >= ${CALL_CONVERSATION_MIN_SEC} THEN 1 ELSE 0 END) AS conversations_5min_plus
 `;
 }
 
