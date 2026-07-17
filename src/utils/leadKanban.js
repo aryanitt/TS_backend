@@ -443,6 +443,13 @@ function groupKanbanSyncedWithCallyzer(allLeads = [], periodCalls = [], meetings
 
   placeMeetingsOnKanban(map, placed, allLeads, meetings, periodKey, showLead, customRange);
 
+  for (const lead of scopedVisible) {
+    if (!showLead(lead)) continue;
+    const dbStageId = mapStageToId(leadStage(lead), lead.status);
+    if (!ADVANCED_KANBAN_STAGES.has(dbStageId)) continue;
+    pushLead(dbStageId, lead);
+  }
+
   const leadsToEvaluate = new Set();
   for (const lead of scopedVisible) {
     if (getLeadCalls(lead).length > 0) leadsToEvaluate.add(String(lead.id));
@@ -473,16 +480,6 @@ function groupKanbanSyncedWithCallyzer(allLeads = [], periodCalls = [], meetings
     if (!col) continue;
     if (resolveLeadForCallFromIndex(call, leadIndex, allLeads)) continue;
     pushLead(col, leadFromOrphanCall(call, col));
-  }
-
-  for (const lead of scopedVisible) {
-    const id = String(lead.id);
-    if (placed.has(id)) continue;
-    const dbStageId = mapStageToId(leadStage(lead), lead.status);
-    if (!ADVANCED_KANBAN_STAGES.has(dbStageId)) continue;
-    if (dbStageId === "meeting_booked" || dbStageId === "meeting_done") continue;
-    if (getOutboundCalls(lead).length === 0) continue;
-    pushLead(dbStageId, lead);
   }
 
   for (const lead of scopedVisible) {
