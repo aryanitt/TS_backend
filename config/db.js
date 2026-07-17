@@ -38,7 +38,18 @@ const pool = mysql.createPool({
   connectTimeout: Number(process.env.DB_CONNECT_TIMEOUT_MS || 8000),
   ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : undefined,
   dateStrings: false,
+  timezone: process.env.APP_TZ_OFFSET || "+05:30",
 });
+
+// Ensure each connection uses IST for CURRENT_DATE / NOW (Hostinger defaults to UTC).
+const tzOffset = process.env.APP_TZ_OFFSET || "+05:30";
+if (pool.pool && typeof pool.pool.on === "function") {
+  pool.pool.on("connection", (conn) => {
+    conn.query(`SET time_zone = '${tzOffset}'`, (err) => {
+      if (err) console.warn("[db] SET time_zone failed:", err.message);
+    });
+  });
+}
 
 logDbEnv("mysql env used by pool");
 
@@ -48,6 +59,7 @@ function transformSql(sql) {
   let s = sql;
 
   s = s.replace(/\bILIKE\b/gi, "LIKE");
+  s = s.replace(/::\w+\[\]/gi, "");
   s = s.replace(/::int\b/gi, "");
   s = s.replace(/::float\b/gi, "");
   s = s.replace(/(\w+\.\w+|\w+)::date/gi, "DATE($1)");
@@ -65,6 +77,16 @@ function transformSql(sql) {
   // PostgreSQL REGEXP_REPLACE 4th 'g' flag
   s = s.replace(/REGEXP_REPLACE\(([^,]+),\s*([^,]+),\s*([^,]+),\s*'g'\)/gi, "REGEXP_REPLACE($1, $2, $3)");
 
+  // PostgreSQL NULLS LAST / NULLS FIRST (MariaDB/MySQL)
+  s = s.replace(
+    /(\w+(?:\.\w+)?)\s+(ASC|DESC)\s+NULLS\s+LAST/gi,
+    (_, col, dir) => `${col} IS NULL ASC, ${col} ${dir}`,
+  );
+  s = s.replace(
+    /(\w+(?:\.\w+)?)\s+(ASC|DESC)\s+NULLS\s+FIRST/gi,
+    (_, col, dir) => `${col} IS NULL DESC, ${col} ${dir}`,
+  );
+
   return s;
 }
 
@@ -72,15 +94,20 @@ function convertPlaceholders(sql, params = []) {
   let workingSql = sql;
   let workingParams = [...params];
 
-  const anyRegex = /= ANY\(\$(\d+)\)/gi;
+  const anyRegex = /= ANY\(\$(\d+)(?:::\w+\[\])?\)/gi;
   let match;
-  while ((match = anyRegex.exec(sql)) !== null) {
+  while ((match = anyRegex.exec(workingSql)) !== null) {
     const paramIndex = Number(match[1]) - 1;
     const arr = workingParams[paramIndex];
     if (Array.isArray(arr)) {
-      const placeholders = arr.map(() => "?").join(", ");
-      workingSql = workingSql.replace(`= ANY($${match[1]})`, `IN (${placeholders})`);
-      workingParams.splice(paramIndex, 1, ...arr);
+      if (!arr.length) {
+        workingSql = workingSql.replace(match[0], "IN (NULL)");
+        workingParams.splice(paramIndex, 1);
+      } else {
+        const inPlaceholders = arr.map((_, i) => `$${paramIndex + 1 + i}`).join(", ");
+        workingSql = workingSql.replace(match[0], `IN (${inPlaceholders})`);
+        workingParams.splice(paramIndex, 1, ...arr);
+      }
       anyRegex.lastIndex = 0;
     }
   }

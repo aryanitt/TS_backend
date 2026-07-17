@@ -52,9 +52,29 @@ const getPipeline = async (req, res) => {
 
 const getPipelineStatus = async (req, res) => {
   try {
-    const rangeKey = req.query.range || "week";
+    const rangeKey = req.query.range || req.query.period || "week";
     const service = req.query.service || "All Services";
-    const data = await dataService.getPipelineStatusGrid(undefined, { rangeKey, service });
+    const data = await dataService.getPipelineStatusGrid(undefined, {
+      rangeKey,
+      period: rangeKey,
+      service,
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+    });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const getFilterRange = async (req, res) => {
+  try {
+    const data = await dataService.getFilterRangeForPeriod(undefined, {
+      period: req.query.period || req.query.range || "month",
+      rangeKey: req.query.range || req.query.period,
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+    });
     res.json(data);
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -165,6 +185,7 @@ module.exports = {
   getRevenue,
   getPipeline,
   getPipelineStatus,
+  getFilterRange,
   getPipelineLeads,
   patchPipelineLead,
   getLeadTasks,

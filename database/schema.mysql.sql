@@ -422,6 +422,20 @@ CREATE TABLE IF NOT EXISTS scheduled_lead_assignments (
   INDEX idx_scheduled_date_status (tenant_id, scheduled_date, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS whatsapp_scripts (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  tenant_id VARCHAR(50) DEFAULT 'default',
+  employee_id INT NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  body TEXT NOT NULL,
+  category VARCHAR(100) DEFAULT 'General',
+  is_active TINYINT(1) DEFAULT 1,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE,
+  INDEX idx_wa_scripts_employee (tenant_id, employee_id, is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ---------------------------------------------------------------------------
 -- Indexes
 -- ---------------------------------------------------------------------------

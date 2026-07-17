@@ -37,7 +37,10 @@ function normalizeLeadInput(input = {}) {
     priority: normalizePriority(input.priority),
     requirements: input.requirements || input.notes || "",
     insights: input.insights || "",
-    sourceMeta: input.sourceMeta || input.rawPayload || {},
+    sourceMeta: {
+      ...(input.sourceMeta || input.rawPayload || {}),
+      ...(input.channel ? { channel: input.channel } : {}),
+    },
   };
 }
 
@@ -51,6 +54,7 @@ function normalizeSource(value) {
   if (s.includes("form")) return "form";
   if (s.includes("campaign")) return "campaign";
   if (s.includes("website") || s.includes("web")) return "website";
+  if (s.includes("linkedin")) return "linkedin";
   if (s.includes("api")) return "api";
   if (s.includes("referral")) return "referral";
   if (s.includes("third")) return "third_party";
@@ -225,8 +229,6 @@ async function assignLead({ tenantId, leadId, employeeId, method = "manual", per
     assignedBy: performedBy,
     assignmentMethod: method,
     assignmentStatus: method === "manual" || method === "bulk" ? "assigned" : "pending",
-    pipelineStage: "New Lead",
-    status: "New Lead",
     acceptedAt: null,
     lastActivityAt: new Date(),
   });
@@ -567,6 +569,82 @@ async function processDueScheduledAssignments(tenantId = DEFAULT_TENANT_ID) {
   return { processed, failures };
 }
 
+function leadMatchesServiceName(lead, serviceName) {
+  const needle = String(serviceName || "").trim().toLowerCase();
+  if (!needle) return false;
+  const fields = [
+    lead.requirements,
+    lead.insights,
+    lead.sourceMeta?.service,
+    lead.service,
+  ].map((v) => String(v || "").toLowerCase().trim());
+  return fields.some((h) => h && (h === needle || h.includes(needle) || needle.includes(h)));
+}
+
+function isLeadUnassignedForDistribution(lead) {
+  const status = String(lead.assignmentStatus || "").toLowerCase();
+  if (["assigned", "accepted", "in_progress"].includes(status)) return false;
+  const assigned = lead.assignedTo;
+  if (assigned == null || assigned === "") return true;
+  if (typeof assigned === "object" && !assigned.id) return true;
+  return false;
+}
+
+async function distributeServiceLeads(tenantId, { serviceId = null, actor: a } = {}) {
+  const dataService = require("./dataService");
+  const { services = [] } = await dataService.listServices(tenantId);
+  const targets = (services || []).filter((svc) => {
+    if (serviceId && String(svc.id) !== String(serviceId)) return false;
+    return svc.distributionEnabled
+      && Array.isArray(svc.distributionEmployeeIds)
+      && svc.distributionEmployeeIds.length > 0;
+  });
+
+  if (!targets.length) {
+    return { assigned: 0, services: 0, skipped: "no_enabled_services" };
+  }
+
+  const { items: allLeads } = await repo.listAllLeads(tenantId, { assignmentStatus: "unassigned" });
+  let assigned = 0;
+  const details = [];
+
+  for (const svc of targets) {
+    const employeeIds = svc.distributionEmployeeIds.map((id) => String(id)).filter(Boolean);
+    if (!employeeIds.length) continue;
+
+    let rrIndex = Number(svc.distributionRrIndex) || 0;
+    const matching = allLeads.filter(
+      (lead) => isLeadUnassignedForDistribution(lead) && leadMatchesServiceName(lead, svc.name),
+    );
+
+    let serviceAssigned = 0;
+    for (const lead of matching) {
+      const employeeId = employeeIds[rrIndex % employeeIds.length];
+      rrIndex += 1;
+      try {
+        await assignLead({
+          tenantId,
+          leadId: lead.id,
+          employeeId: Number(employeeId),
+          method: "round_robin",
+          performedBy: "service-distribution",
+          actor: a,
+          reason: `Auto-distributed for service: ${svc.name}`,
+        });
+        assigned += 1;
+        serviceAssigned += 1;
+      } catch {
+        // skip failed assignment, continue round-robin
+      }
+    }
+
+    await dataService.updateServiceDistributionIndex(tenantId, svc.id, rrIndex);
+    details.push({ serviceId: svc.id, serviceName: svc.name, assigned: serviceAssigned, pending: matching.length - serviceAssigned });
+  }
+
+  return { assigned, services: targets.length, details };
+}
+
 module.exports = {
   tenant,
   actor,
@@ -590,4 +668,5 @@ module.exports = {
   notify,
   scheduleLeadAssignments,
   processDueScheduledAssignments,
+  distributeServiceLeads,
 };

@@ -574,10 +574,17 @@ const getEmpLeadStatusHistory = async (req, res) => {
 };
 const getEmpLeadsPipelineStats = async (req, res) => {
   try {
-    const rangeKey = req.query.range || "month";
+    const rangeKey = req.query.range || req.query.period || "month";
     const service = req.query.service || "All Services";
     const employee = req.query.employee || "All Employees";
-    const data = await dataService.getPipelineStatusGrid(undefined, { rangeKey, service, employee });
+    const data = await dataService.getPipelineStatusGrid(undefined, {
+      rangeKey,
+      period: rangeKey,
+      service,
+      employee,
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+    });
     res.json(data);
   } catch (error) {
     console.error("pipeline-stats error:", error);
@@ -587,8 +594,15 @@ const getEmpLeadsPipelineStats = async (req, res) => {
 
 const getSalesFunnelKPIs = async (req, res) => {
   try {
-    const { employee, service } = req.query;
-    const data = await dataService.getSalesFunnelKPIs(undefined, { employee, service });
+    const { employee, service, period, range, startDate, endDate } = req.query;
+    const data = await dataService.getSalesFunnelKPIs(undefined, {
+      employee,
+      service,
+      period: period || range || "month",
+      rangeKey: range || period,
+      startDate,
+      endDate,
+    });
     res.json(data);
   } catch (error) {
     console.error("sales-kpis error:", error);
@@ -598,8 +612,16 @@ const getSalesFunnelKPIs = async (req, res) => {
 
 const getOppCategoryLeads = async (req, res) => {
   try {
-    const { category, employee, service } = req.query;
-    const data = await dataService.getOppCategoryLeads(undefined, { category, employee, service });
+    const { category, employee, service, period, range, startDate, endDate } = req.query;
+    const data = await dataService.getOppCategoryLeads(undefined, {
+      category,
+      employee,
+      service,
+      period: period || range || "month",
+      rangeKey: range || period,
+      startDate,
+      endDate,
+    });
     res.json(data);
   } catch (error) {
     console.error("opp-leads error:", error);

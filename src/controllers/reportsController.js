@@ -1,7 +1,16 @@
 const dataService = require("../services/dataService");
 
+function periodOptionsFromQuery(query = {}) {
+  return {
+    period: query.period || query.range || "month",
+    rangeKey: query.range || query.period,
+    startDate: query.startDate,
+    endDate: query.endDate,
+  };
+}
+
 const getReportsDashboard = async (req, res) => {
-  const bundle = await dataService.getReportsBundle();
+  const bundle = await dataService.getReportsBundle(undefined, periodOptionsFromQuery(req.query));
   res.json({
     success: true,
     source: bundle.source,
@@ -17,7 +26,7 @@ const getReportsDashboard = async (req, res) => {
 };
 
 const getReportsAnalytics = async (req, res) => {
-  const bundle = await dataService.getReportsBundle();
+  const bundle = await dataService.getReportsBundle(undefined, periodOptionsFromQuery(req.query));
   res.json({
     success: true,
     source: bundle.source,
@@ -28,7 +37,7 @@ const getReportsAnalytics = async (req, res) => {
 };
 
 const getTeamComparison = async (req, res) => {
-  const bundle = await dataService.getReportsBundle();
+  const bundle = await dataService.getReportsBundle(undefined, periodOptionsFromQuery(req.query));
   res.json({ success: true, team: bundle.team || [] });
 };
 

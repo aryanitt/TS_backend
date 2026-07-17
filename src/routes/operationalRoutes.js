@@ -18,9 +18,11 @@ const {
   meetingPatchSchema,
   momSchema,
   cashCollectionSchema,
+  whatsappScriptSchema,
+  whatsappScriptPatchSchema,
 } = require("../validators/operationalSchemas");
 const pool = require("../../config/db");
-const { CALL_CONVERSATION_MIN_SEC } = require("../utils/callMetrics");
+const { queryCallStats } = require("../utils/employeeCallStats");
 const { requirePg } = require("../middleware/pgReady");
 const {
   isAdminUser,
@@ -51,6 +53,10 @@ const {
   scheduleLeadAssignments,
 } = require("../services/operationalServices");
 const callyzer = require("../services/callyzerService");
+const {
+  buildPipelineBoardPayload,
+  formatDbCallsForEmployee,
+} = require("../services/pipelineBoardService");
 
 const router = express.Router();
 const uploadDir = path.join(process.cwd(), "uploads");
@@ -219,6 +225,18 @@ router.post("/leads/:id/notes", validate(noteSchema), requireEmployeeOwnsLead(),
 router.get("/leads/:id/notes", requireEmployeeOwnsLead(), asyncRoute(async (req, res) => {
   const notes = await repo.listNotes(tenant(req), req.params.id);
   return ok(res, notes);
+}));
+
+router.get("/leads/:id/calls", requireEmployeeOwnsLead(), asyncRoute(async (req, res) => {
+  const tenantId = tenant(req);
+  const lead = await repo.findLeadById(tenantId, req.params.id);
+  if (!lead) {
+    return res.status(404).json({ success: false, message: "Lead not found" });
+  }
+  const limit = Number(req.query.limit) || 200;
+  const dbCalls = await repo.listCallsForLead(tenantId, lead, { limit });
+  const calls = formatDbCallsForEmployee(dbCalls, [lead]);
+  return ok(res, calls, { total: calls.length });
 }));
 
 router.get("/leads/:id/cash-collections", requireEmployeeOwnsLead(), asyncRoute(async (req, res) => {
@@ -415,19 +433,6 @@ router.get("/sops", asyncRoute(async (req, res) => {
   return ok(res, sops);
 }));
 
-function formatDbCallsForEmployee(dbCalls, leads, { limit } = {}) {
-  const phoneIndex = callyzer.buildLeadPhoneIndex(leads);
-  const sorted = dbCalls
-    .map((c) => callyzer.attachLeadToCall(c, leads, phoneIndex))
-    .sort((a, b) => {
-      const ta = new Date(a.startedAt || a.createdAt || 0).getTime();
-      const tb = new Date(b.startedAt || b.createdAt || 0).getTime();
-      return tb - ta;
-    });
-  if (limit == null) return sorted;
-  return sorted.slice(0, Math.max(Number(limit) || 0, 1));
-}
-
 function scheduleBackgroundCallyzerSync(tenantId, employee, dbCalls, leads) {
   if (!callyzer.isConfigured() || !employee) return;
   const days = Number(process.env.CALLYZER_HISTORY_DAYS || 30);
@@ -614,7 +619,7 @@ router.get("/employee/:employeeId/calls", requireEmployeeSelf(), asyncRoute(asyn
     repo.listAllLeads(tenantId, { assignedTo: employeeId }),
   ]);
   const leads = leadsResult.items;
-  const syncCallyzer = req.query.sync !== "0";
+  const syncCallyzer = req.query.sync === "1" || req.query.syncCallyzer === "1";
 
   if (syncCallyzer && callyzer.isConfigured() && employee) {
     const allDbCalls = await repo.listCalls(tenantId, employeeId);
@@ -623,18 +628,137 @@ router.get("/employee/:employeeId/calls", requireEmployeeSelf(), asyncRoute(asyn
       leads,
       days: Number(req.query.days || process.env.CALLYZER_HISTORY_DAYS || 30),
     });
-  } else if (employee) {
-    scheduleBackgroundCallyzerSync(
-      tenantId,
-      employee,
-      await repo.listCalls(tenantId, employeeId),
-      leads,
-    );
   }
 
   const dbCalls = await repo.listCalls(tenantId, employeeId, { period, limit });
   const calls = formatDbCallsForEmployee(dbCalls, leads);
   return ok(res, calls, { total: calls.length, period: period === "all" ? null : period });
+}));
+
+router.get("/pipeline/board", asyncRoute(async (req, res) => {
+  if (!isAdminUser(req)) {
+    return res.status(403).json({ success: false, message: "Admin access required" });
+  }
+  const tenantId = tenant(req);
+  const period = String(req.query.period || "month").toLowerCase();
+  const limit = Number(req.query.limit) || 5000;
+
+  const leadsResult = await repo.listAllLeads(tenantId, {}, { pageSize: 2000, maxPages: 10 });
+
+  if (req.query.sync === "1" && callyzer.isConfigured()) {
+    const employees = await repo.listActiveEmployees(tenantId);
+    const syncDays = Number(process.env.CALLYZER_HISTORY_DAYS || 30);
+    await Promise.all(
+      employees.map(async (employee) => {
+        const dbCalls = await repo.listCalls(tenantId, employee.id, { limit: 500 });
+        await callyzer.syncEmployeeCallsIfStale(tenantId, employee, {
+          dbCalls,
+          leads: leadsResult.items,
+          days: syncDays,
+          force: true,
+        });
+      }),
+    );
+  }
+
+  const payload = await buildPipelineBoardPayload(tenantId, {
+    period,
+    limit,
+    attachLeads: leadsResult.items,
+  });
+  return ok(res, payload, { syncedAt: new Date().toISOString() });
+}));
+
+router.get("/employee/:employeeId/pipeline/board", requireEmployeeSelf(), asyncRoute(async (req, res) => {
+  const tenantId = tenant(req);
+  const employeeId = req.params.employeeId;
+  const period = String(req.query.period || "month").toLowerCase();
+  const limit = Number(req.query.limit) || 5000;
+
+  const employee = await repo.findEmployeeById(tenantId, employeeId);
+  let employeeLeads = [];
+  if (employeeId != null) {
+    const { items } = await repo.listAllLeads(tenantId, { assignedTo: employeeId }, { pageSize: 2000, maxPages: 10 });
+    employeeLeads = items;
+  }
+
+  // Only sync when explicitly requested — period toggles use sync=0 for fast DB reads.
+  if (req.query.sync === "1" && employee && callyzer.isConfigured()) {
+    const dbCalls = await repo.listCalls(tenantId, employeeId, { limit: 500 });
+    const leadsForSync = employeeLeads.length
+      ? employeeLeads
+      : (await repo.listAllLeads(tenantId, { assignedTo: employeeId }, { pageSize: 2000, maxPages: 10 })).items;
+    await callyzer.getCallsForEmployee(tenantId, employee, {
+      dbCalls,
+      leads: leadsForSync,
+      days: Number(process.env.CALLYZER_HISTORY_DAYS || 30),
+    });
+  }
+
+  const payload = await buildPipelineBoardPayload(tenantId, {
+    period,
+    employeeId,
+    limit,
+    attachLeads: employeeLeads,
+  });
+  return ok(res, payload, { syncedAt: new Date().toISOString() });
+}));
+
+router.get("/calls", asyncRoute(async (req, res) => {
+  if (!isAdminUser(req)) {
+    return res.status(403).json({ success: false, message: "Admin access required" });
+  }
+  const tenantId = tenant(req);
+  const period = String(req.query.period || "month").toLowerCase();
+  const limit = Number(req.query.limit) || Number(process.env.EMPLOYEE_CALLS_MAX || 10000);
+  const shouldSync = req.query.sync === "1";
+
+  const { items: leads } = await repo.listAllLeads(tenantId, {}, { pageSize: 500, maxPages: 40 });
+
+  if (shouldSync && callyzer.isConfigured()) {
+    const employees = await repo.listActiveEmployees(tenantId);
+    const syncDays = Number(process.env.CALLYZER_HISTORY_DAYS || 30);
+    await Promise.all(
+      employees.map(async (employee) => {
+        const dbCalls = await repo.listCalls(tenantId, employee.id, { limit: 500 });
+        await callyzer.syncEmployeeCallsIfStale(tenantId, employee, {
+          dbCalls,
+          leads,
+          days: syncDays,
+          force: true,
+        });
+      }),
+    );
+  }
+
+  const dbCalls = await repo.listTenantCalls(tenantId, { period, limit });
+  const calls = formatDbCallsForEmployee(dbCalls, leads);
+  return ok(res, calls, { total: calls.length, period: period === "all" ? null : period });
+}));
+
+router.get("/meetings", asyncRoute(async (req, res) => {
+  if (!isAdminUser(req)) {
+    return res.status(403).json({ success: false, message: "Admin access required" });
+  }
+  const meetings = await repo.listTenantMeetings(tenant(req));
+  return ok(res, meetings);
+}));
+
+router.get("/callyzer/stats", asyncRoute(async (req, res) => {
+  if (!isAdminUser(req)) {
+    return res.status(403).json({ success: false, message: "Admin access required" });
+  }
+  const tenantId = tenant(req);
+  const month = req.query.month;
+  const period = String(req.query.period || "month").toLowerCase();
+  const stats = await queryCallStats(pool, { tenantId, period, month });
+  return ok(res, {
+    success: true,
+    configured: true,
+    syncedAt: new Date().toISOString(),
+    stats,
+    period: month || period,
+  });
 }));
 
 router.get("/employee/:employeeId/callyzer/stats", requireEmployeeSelf(), asyncRoute(async (req, res) => {
@@ -661,90 +785,15 @@ router.get("/employee/:employeeId/callyzer/stats", requireEmployeeSelf(), asyncR
     }
   }
 
-  let dateWhere = "1=1";
-  let params = [tenantId, employeeId];
-
-  if (month) {
-    dateWhere = "DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = $3";
-    params.push(month);
-  } else if (period === "today") {
-    dateWhere = "DATE(COALESCE(started_at, created_at)) = CURRENT_DATE()";
-  } else if (period === "yesterday") {
-    dateWhere = "DATE(COALESCE(started_at, created_at)) = CURRENT_DATE() - INTERVAL 1 DAY";
-  } else if (period === "this_month" || period === "month") {
-    dateWhere = "DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = DATE_FORMAT(CURRENT_DATE(), '%Y-%m')";
-  } else if (period === "week" || period === "this_week") {
-    dateWhere = "DATE(COALESCE(started_at, created_at)) >= DATE_SUB(CURRENT_DATE(), INTERVAL WEEKDAY(CURRENT_DATE()) DAY) AND DATE(COALESCE(started_at, created_at)) <= CURRENT_DATE()";
-  } else if (period === "last_month") {
-    dateWhere = "DATE_FORMAT(COALESCE(started_at, created_at), '%Y-%m') = DATE_FORMAT(CURRENT_DATE() - INTERVAL 1 MONTH, '%Y-%m')";
-  }
-
-  const queryText = `
-    SELECT 
-      COUNT(*) AS total_calls,
-      SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END) AS connected_calls,
-      SUM(CASE WHEN LOWER(direction) IN ('in', 'inbound') THEN 1 ELSE 0 END) AS incoming_calls,
-      SUM(CASE WHEN LOWER(direction) IN ('out', 'outbound') THEN 1 ELSE 0 END) AS outgoing_calls,
-      SUM(CASE WHEN duration_sec = 0 OR duration_sec IS NULL THEN 1 ELSE 0 END) AS missed_calls,
-      SUM(CASE WHEN outcome = 'rejected' THEN 1 ELSE 0 END) AS rejected_calls,
-      SUM(CASE WHEN LOWER(direction) IN ('out', 'outbound') AND (duration_sec = 0 OR duration_sec IS NULL) THEN 1 ELSE 0 END) AS not_pickup_by_client,
-      COUNT(DISTINCT COALESCE(lead_id, callyzer_call_id, id)) AS unique_clients,
-      SUM(duration_sec) AS total_duration_sec,
-      SUM(CASE WHEN LOWER(direction) IN ('in', 'inbound') THEN duration_sec ELSE 0 END) AS incoming_duration_sec,
-      SUM(CASE WHEN LOWER(direction) IN ('out', 'outbound') THEN duration_sec ELSE 0 END) AS outgoing_duration_sec,
-      SUM(CASE WHEN duration_sec >= ${CALL_CONVERSATION_MIN_SEC} THEN 1 ELSE 0 END) AS conversations_5min_plus
-    FROM employee_calls
-    WHERE tenant_id = $1 AND employee_id = $2 AND ${dateWhere}
-  `;
-
-  const result = await pool.query(queryText, params);
-  const row = result.rows[0] || {};
-  
-  const totalCalls = Number(row.total_calls) || 0;
-  const connectedCalls = Number(row.connected_calls) || 0;
-  const incomingCalls = Number(row.incoming_calls) || 0;
-  const outgoingCalls = Number(row.outgoing_calls) || 0;
-  const missedCalls = Number(row.missed_calls) || 0;
-  const rejectedCalls = Number(row.rejected_calls) || 0;
-  const notPickupByClient = Number(row.not_pickup_by_client) || 0;
-  const uniqueClients = Number(row.unique_clients) || 0;
-  const conversations5MinPlus = Number(row.conversations_5min_plus) || 0;
-  
-  const totalDurationSec = Number(row.total_duration_sec) || 0;
-  const incomingDurationSec = Number(row.incoming_duration_sec) || 0;
-  const outgoingDurationSec = Number(row.outgoing_duration_sec) || 0;
-
-  const formatDurationHms = (sec) => {
-    const s = Number(sec) || 0;
-    const hrs = Math.floor(s / 3600);
-    const mins = Math.floor((s % 3600) / 60);
-    const secs = s % 60;
-    return [hrs, mins, secs].map(v => String(v).padStart(2, '0')).join(':');
-  };
+  const stats = await queryCallStats(pool, { tenantId, employeeId, period, month });
 
   return ok(res, {
     success: true,
     configured: true,
     synced,
     syncedAt: new Date().toISOString(),
-    stats: {
-      totalCalls,
-      connectedCalls,
-      incomingCalls,
-      outgoingCalls,
-      missedCalls,
-      rejectedCalls,
-      neverAttended: missedCalls,
-      notPickupByClient,
-      uniqueClients,
-      conversations5MinPlus,
-      totalDuration: formatDurationHms(totalDurationSec),
-      incomingDuration: formatDurationHms(incomingDurationSec),
-      outgoingDuration: formatDurationHms(outgoingDurationSec),
-      workingHours: formatDurationHms(totalDurationSec),
-      conversations5MinDuration: `${conversations5MinPlus} connected calls ≥ 2 min`,
-    },
-    period: month || period
+    stats,
+    period: month || period,
   });
 }));
 
@@ -765,6 +814,54 @@ router.patch("/employee/followups/:id/complete", asyncRoute(async (req, res) => 
 router.get("/employee/:employeeId/followups", requireEmployeeSelf(), asyncRoute(async (req, res) => {
   const followups = await repo.listFollowups(tenant(req), req.params.employeeId);
   return ok(res, followups);
+}));
+
+router.get("/employee/:employeeId/whatsapp-scripts", requireEmployeeSelf(), asyncRoute(async (req, res) => {
+  const includeInactive = req.query.includeInactive === "1" || req.query.all === "1";
+  const scripts = await repo.listWhatsAppScripts(tenant(req), req.params.employeeId, { includeInactive });
+  return ok(res, scripts);
+}));
+
+router.post("/employee/:employeeId/whatsapp-scripts", requireEmployeeSelf(), validate(whatsappScriptSchema), asyncRoute(async (req, res) => {
+  const tenantId = tenant(req);
+  const employeeId = Number(req.params.employeeId);
+  const employee = await repo.findEmployeeById(tenantId, employeeId);
+  if (!employee) {
+    return res.status(400).json({ success: false, message: "Employee not found" });
+  }
+  const script = await repo.insertWhatsAppScript({
+    tenantId,
+    employeeId,
+    title: req.body.title.trim(),
+    body: req.body.body.trim(),
+    category: req.body.category?.trim() || "General",
+    isActive: req.body.isActive !== false,
+  });
+  return ok(res, script);
+}));
+
+router.patch("/employee/whatsapp-scripts/:id", validate(whatsappScriptPatchSchema), asyncRoute(async (req, res) => {
+  const tenantId = tenant(req);
+  const scriptId = Number(req.params.id);
+  const existing = await repo.findWhatsAppScriptById(tenantId, scriptId);
+  if (!existing) {
+    return res.status(404).json({ success: false, message: "Script not found" });
+  }
+  if (!denyUnlessSelfOrAdmin(req, res, existing.employeeId)) return;
+  const script = await repo.updateWhatsAppScript(tenantId, scriptId, existing.employeeId, req.body);
+  return ok(res, script);
+}));
+
+router.delete("/employee/whatsapp-scripts/:id", asyncRoute(async (req, res) => {
+  const tenantId = tenant(req);
+  const scriptId = Number(req.params.id);
+  const existing = await repo.findWhatsAppScriptById(tenantId, scriptId);
+  if (!existing) {
+    return res.status(404).json({ success: false, message: "Script not found" });
+  }
+  if (!denyUnlessSelfOrAdmin(req, res, existing.employeeId)) return;
+  await repo.deleteWhatsAppScript(tenantId, scriptId, existing.employeeId);
+  return ok(res, { id: scriptId });
 }));
 
 router.post("/employee/meetings", validate(meetingSchema), requireEmployeeSelfBody("employeeId"), requireEmployeeOwnsLeadBody("leadId"), asyncRoute(async (req, res) => {
@@ -850,8 +947,24 @@ router.get("/audit", asyncRoute(async (req, res) => {
 }));
 
 router.post("/webhooks/n8n", validate(createLeadSchema), asyncRoute(async (req, res) => {
+  const channel =
+    req.body.source
+    || req.body.channel
+    || req.body.platform
+    || req.body.utm_source
+    || req.body.lead_source
+    || null;
   const result = await createLead(
-    { ...req.body, source: "n8n", rawPayload: req.body },
+    {
+      ...req.body,
+      source: "n8n",
+      channel,
+      sourceMeta: {
+        integration: "n8n",
+        channel,
+        ...(typeof req.body === "object" && req.body ? req.body : {}),
+      },
+    },
     { tenantId: tenant(req), actor: { actorId: "webhook:n8n", actorName: "n8n Webhook", actorRole: "integration" } },
   );
   return res.status(202).json({ success: true, leadId: result.lead.id, queueId: result.queueItem.id });
@@ -888,11 +1001,11 @@ router.post("/webhooks/callyzer", asyncRoute(async (req, res) => {
       if (!lead) {
         lead = await repo.findLeadByPhone(tenantId, log.client_number, { assignedTo: employee.id });
       }
-      
+
       if (!lead) {
         const clientPhone = callyzer.normalizePhone(log.client_country_code, log.client_number).full || log.client_number;
         const leadName = log.client_name || "Unknown Lead";
-        
+
         const existingLead = await repo.findLeadByPhone(tenantId, clientPhone);
         if (existingLead) {
           lead = existingLead;
@@ -902,8 +1015,6 @@ router.post("/webhooks/callyzer", asyncRoute(async (req, res) => {
               leadName,
               phone: clientPhone,
               source: "Callyzer",
-              pipelineStage: "Lead",
-              status: "Lead",
               temperature: "warm",
               assignedTo: employee.id,
             }, { tenantId, autoAssign: false, actor: { actorId: `employee:${employee.id}`, actorName: employee.name, actorRole: "employee" } });
@@ -973,6 +1084,68 @@ router.post("/webhooks/forms/:formId/submit", validate(createLeadSchema), asyncR
     { tenantId: tenant(req), actor: { actorId: `form:${req.params.formId}`, actorName: "Website Form", actorRole: "integration" } },
   );
   return res.status(202).json({ success: true, leadId: result.lead.id, queueId: result.queueItem.id });
+}));
+
+/** Shared team assets — visible to every employee in the tenant. */
+router.get("/assets", asyncRoute(async (req, res) => {
+  const items = await repo.listTeamAssets(tenant(req));
+  return ok(res, items);
+}));
+
+function optionalAssetUpload(req, res, next) {
+  if (req.is("multipart/form-data")) {
+    return upload.single("file")(req, res, next);
+  }
+  return next();
+}
+
+router.post("/assets", optionalAssetUpload, asyncRoute(async (req, res) => {
+  const category = String(req.body.category || req.body.cat || "brochure").trim() || "brochure";
+  const displayName = String(req.body.name || req.body.displayName || "").trim();
+  const uploader = actor(req);
+
+  if (req.file) {
+    const asset = await repo.insertFileAsset({
+      tenantId: tenant(req),
+      uploadedBy: uploader.actorName || uploader.actorId,
+      entityType: "team_asset",
+      entityId: category,
+      filename: req.file.filename,
+      originalName: displayName || req.file.originalname,
+      mime: req.file.mimetype,
+      size: req.file.size,
+      storageKey: req.file.path,
+      url: `/uploads/${req.file.filename}`,
+    });
+    return ok(res, asset);
+  }
+
+  const text = String(req.body.content || req.body.text || "").trim();
+  if (!text) {
+    return res.status(400).json({ success: false, message: "file or text content is required" });
+  }
+  if (!displayName) {
+    return res.status(400).json({ success: false, message: "Asset name is required" });
+  }
+
+  const filename = `team-note-${Date.now()}.txt`;
+  const storageKey = path.join(uploadDir, filename);
+  fs.writeFileSync(storageKey, text, "utf8");
+  const size = Buffer.byteLength(text, "utf8");
+
+  const asset = await repo.insertFileAsset({
+    tenantId: tenant(req),
+    uploadedBy: uploader.actorName || uploader.actorId,
+    entityType: "team_asset",
+    entityId: category,
+    filename,
+    originalName: displayName,
+    mime: "text/plain",
+    size,
+    storageKey,
+    url: `/uploads/${filename}`,
+  });
+  return ok(res, asset);
 }));
 
 router.post("/files/upload", upload.single("file"), asyncRoute(async (req, res) => {

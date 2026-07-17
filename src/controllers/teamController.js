@@ -19,10 +19,12 @@ const {
 const {
   computeLeadStats,
   buildLeadFunnel,
+  buildCallyzerFunnel,
   buildStageBreakdown,
   CONTACTED_LEAD_SQL,
   ACTIVE_LEAD_SQL,
 } = require("../utils/leadStats");
+const { queryCallStats } = require("../utils/employeeCallStats");
 
 function mapLeadRow(row) {
   return {
@@ -421,7 +423,7 @@ const getEmployeeDetails = async (req, res) => {
 
 const getEmployeeLeads = async (req, res) => {
   try {
-    const { employee_name, employee_id } = req.query;
+    const { employee_name, employee_id, period, month } = req.query;
     let empId = employee_id ? Number(employee_id) : null;
     let empName = employee_name ? String(employee_name).trim() : "";
 
@@ -479,7 +481,18 @@ const getEmployeeLeads = async (req, res) => {
         time: l.updated_at,
         business: l.business_name || "",
       }));
-    const funnel = buildLeadFunnel(stats);
+
+    let funnel = buildLeadFunnel(stats);
+    if (empId && (period || month)) {
+      const callStats = await queryCallStats(pool, {
+        tenantId: "default",
+        employeeId: empId,
+        period: String(period || "month").toLowerCase(),
+        month: month || null,
+      });
+      funnel = buildCallyzerFunnel(stats, callStats);
+    }
+
     const stageBreakdown = buildStageBreakdown(leads);
 
     res.json({
