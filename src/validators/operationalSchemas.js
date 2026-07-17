@@ -140,6 +140,20 @@ const cashCollectionSchema = z.object({
   }
 });
 
+const whatsappScriptSchema = z.object({
+  title: z.string().min(1).max(255),
+  body: z.string().min(1),
+  category: z.string().max(100).optional(),
+  isActive: z.boolean().optional(),
+});
+
+const whatsappScriptPatchSchema = z.object({
+  title: z.string().min(1).max(255).optional(),
+  body: z.string().min(1).optional(),
+  category: z.string().max(100).optional(),
+  isActive: z.boolean().optional(),
+}).refine((data) => Object.keys(data).length > 0, { message: "At least one field required" });
+
 function validate(schema) {
   return (req, res, next) => {
     const parsed = schema.safeParse(req.body);
@@ -169,4 +183,6 @@ module.exports = {
   meetingPatchSchema,
   momSchema,
   cashCollectionSchema,
+  whatsappScriptSchema,
+  whatsappScriptPatchSchema,
 };

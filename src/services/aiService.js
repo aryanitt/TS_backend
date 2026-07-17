@@ -24,7 +24,7 @@ async function processCallWithAi(tenantId, callId) {
   let summary = "";
   let sentiment = "neutral";
   let rating = 4;
-  let temperature = "Warm Lead";
+  let temperature = "Cold Lead";
   let pipelineStage = "Lead";
   const callAiModel = getCallAiModel();
 
@@ -106,7 +106,7 @@ async function processCallWithAi(tenantId, callId) {
       summary = analysis.summary;
       sentiment = analysis.sentiment;
       rating = analysis.rating;
-      temperature = analysis.temperature || "Warm Lead";
+      temperature = analysis.temperature || "Cold Lead";
       pipelineStage = analysis.pipelineStage || "Lead";
 
     } catch (err) {
@@ -116,7 +116,7 @@ async function processCallWithAi(tenantId, callId) {
       summary = simulated.summary;
       sentiment = simulated.sentiment;
       rating = simulated.rating;
-      temperature = simulated.temperature || "Warm Lead";
+      temperature = simulated.temperature || "Cold Lead";
       pipelineStage = simulated.pipelineStage || "Lead";
     }
   } else {
@@ -126,7 +126,7 @@ async function processCallWithAi(tenantId, callId) {
     summary = simulated.summary;
     sentiment = simulated.sentiment;
     rating = simulated.rating;
-    temperature = simulated.temperature || "Warm Lead";
+    temperature = simulated.temperature || "Cold Lead";
     pipelineStage = simulated.pipelineStage || "Lead";
   }
 
@@ -142,9 +142,9 @@ async function processCallWithAi(tenantId, callId) {
   if (call.lead_id) {
     await pool.query(
       `UPDATE leads 
-       SET temperature = $1, pipeline_stage = $2, updated_at = NOW()
-       WHERE id = $3 AND tenant_id = $4`,
-      [temperature, pipelineStage, call.lead_id, tenantId]
+       SET temperature = $1, updated_at = NOW()
+       WHERE id = $2 AND tenant_id = $3`,
+      [temperature, call.lead_id, tenantId]
     );
   }
 

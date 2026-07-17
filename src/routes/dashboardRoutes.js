@@ -7,6 +7,7 @@ const {
   getRevenue,
   getPipeline,
   getPipelineStatus,
+  getFilterRange,
   getPipelineLeads,
   patchPipelineLead,
   getLeadTasks,
@@ -28,6 +29,7 @@ router.get("/revenue", getRevenue);
 // PIPELINE + SERVICE BREAKDOWN
 router.get("/pipeline", getPipeline);
 router.get("/pipeline-status", getPipelineStatus);
+router.get("/filter-range", getFilterRange);
 
 // KANBAN LEADS
 router.get("/pipeline/leads", getPipelineLeads);

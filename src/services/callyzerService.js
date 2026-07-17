@@ -120,7 +120,9 @@ function employeeEmpNumbers(employee) {
 
 function callTypeToDirection(callType) {
   const t = String(callType || "").toLowerCase();
-  if (t === "incoming" || t === "missed") return "inbound";
+  if (t === "incoming") return "inbound";
+  if (t === "outgoing" || t === "rejected") return "outbound";
+  if (t === "missed") return "inbound";
   return "outbound";
 }
 
@@ -547,7 +549,7 @@ async function autoCreateLeadForPhone(tenantId, employeeId, phone, name) {
       `INSERT INTO leads (tenant_id, lead_name, phone, pipeline_stage, status, temperature, assigned_to, source, company_name)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING id`,
-      [tenantId, name || "Unknown Lead", phone, "Contacted", "Contacted", "warm", employeeId, "Callyzer", "Callyzer Call"]
+      [tenantId, name || "Unknown Lead", phone, "new", "new", "warm", employeeId, "Callyzer", "Callyzer Call"]
     );
     const newId = result.rows[0].id;
 
@@ -664,6 +666,22 @@ async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [
       } else {
         const dbCall = dbCalls.find((c) => c.callyzerCallId === log.id);
         if (dbCall) {
+          const mappedDirection = callTypeToDirection(log.call_type);
+          const mappedOutcome = callTypeToOutcome(log.call_type, Number(log.duration) || 0);
+          const needsDirectionFix = dbCall.direction !== mappedDirection
+            && (mappedDirection === "outbound" || mappedDirection === "inbound");
+          if (needsDirectionFix || (dbCall.outcome !== mappedOutcome && mappedOutcome)) {
+            dbCall.direction = mappedDirection;
+            dbCall.outcome = mappedOutcome || dbCall.outcome;
+            try {
+              await pool.query(
+                "UPDATE employee_calls SET direction = $1, outcome = $2 WHERE tenant_id = $3 AND callyzer_call_id = $4",
+                [mappedDirection, mappedOutcome || dbCall.outcome, tenantId, log.id],
+              );
+            } catch (e) {
+              logger.error("Failed to update call direction", { callyzerCallId: log.id, message: e.message });
+            }
+          }
           if (!dbCall.leadId && leadId) {
             dbCall.leadId = leadId;
             try {

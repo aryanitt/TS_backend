@@ -1,12 +1,15 @@
 const pool = require("../../config/db");
 const mock = require("../data/mockFallback");
-const { PIPELINE_QUALIFIED_LEAD_SQL } = require("../utils/leadStats");
+const { PIPELINE_QUALIFIED_LEAD_SQL, CONTACTED_LEAD_SQL } = require("../utils/leadStats");
 const { CALL_CONVERSATION_MIN_SEC } = require("../utils/callMetrics");
+const { buildPeriodDateFilter } = require("../utils/periodFilter");
 const {
   mapStageToId,
   normalizeStageLabel,
   ADMIN_PIPELINE_TO_DB_STAGE,
 } = require("../utils/pipelineStages");
+const { loadKanbanOppData } = require("./pipelineBoardService");
+const { buildPipelineStatusGridFromKanban, KANBAN_TO_FUNNEL_COL } = require("../utils/leadKanban");
 
 const TENANT = "default";
 
@@ -47,6 +50,67 @@ function rangeToDates(rangeKey) {
   return { start, end };
 }
 
+function normalizeRangeKey(rangeKey = "month") {
+  const raw = String(rangeKey || "month").toLowerCase();
+  if (raw === "day" || raw === "today") return "today";
+  if (raw === "this week" || raw === "this_week" || raw === "week") return "week";
+  if (raw === "this month" || raw === "this_month" || raw === "month") return "month";
+  if (raw === "custom") return "custom";
+  return raw;
+}
+
+/** Period filter on leads — activity for pipeline views, created_at for lead-count KPIs. */
+function appendLeadPeriodFilter(whereParts, params, options = {}, alias = "l") {
+  const rangeKey = normalizeRangeKey(options.period || options.rangeKey || "month");
+  const prefix = alias ? `${alias}.` : "";
+  const dateMode = options.dateMode === "created" ? "created" : "activity";
+  const dateCol = dateMode === "created"
+    ? `${prefix}created_at`
+    : `COALESCE(${prefix}last_activity_at, ${prefix}updated_at, ${prefix}created_at)`;
+  const clipWeekToMonth = dateMode === "created" && options.clipWeekToMonth !== false;
+
+  if (rangeKey === "custom" && options.startDate && options.endDate) {
+    params.push(options.startDate, options.endDate);
+    const a = params.length - 1;
+    const b = params.length;
+    whereParts.push(`DATE(${dateCol}) >= $${a} AND DATE(${dateCol}) <= $${b}`);
+    return;
+  }
+
+  if (rangeKey === "all") return;
+
+  const filter = buildPeriodDateFilter({
+    period: rangeKey,
+    column: dateCol,
+    paramOffset: params.length + 1,
+    clipWeekToMonth,
+  });
+  whereParts.push(filter.clause);
+  params.push(...filter.params);
+}
+
+function appendColumnPeriodFilter(whereParts, params, options = {}, columnExpr) {
+  const rangeKey = normalizeRangeKey(options.period || options.rangeKey || "month");
+
+  if (rangeKey === "custom" && options.startDate && options.endDate) {
+    params.push(options.startDate, options.endDate);
+    const a = params.length - 1;
+    const b = params.length;
+    whereParts.push(`DATE(${columnExpr}) >= $${a} AND DATE(${columnExpr}) <= $${b}`);
+    return;
+  }
+
+  if (rangeKey === "all") return;
+
+  const filter = buildPeriodDateFilter({
+    period: rangeKey,
+    column: columnExpr,
+    paramOffset: params.length + 1,
+  });
+  whereParts.push(filter.clause);
+  params.push(...filter.params);
+}
+
 function mapStageToPipeline(stage, status = "") {
   return mapStageToId(stage, status);
 }
@@ -63,45 +127,9 @@ function normalizeLeadText(value) {
 }
 
 function mapLeadToPipelineColumn(row) {
-  const stageRaw = String(row.pipeline_stage || row.status || "new").toLowerCase().trim();
-
-  let stage = "new";
-  const STAGE_MAP = [
-    ["closed won", "closed_won"],
-    ["converted", "closed_won"],
-    ["won", "closed_won"],
-    ["proposal sent", "proposal"],
-    ["showed up", "qualified"],
-    ["showed-up", "qualified"],
-    ["booked", "qualified"],
-    ["conversation", "contacted"],
-    ["not interested", "not_interested"],
-    ["not_interested", "not_interested"],
-    ["ni", "not_interested"],
-    ["negotiation", "negotiation"],
-    ["proposal", "proposal"],
-    ["qualified", "qualified"],
-    ["contacted", "contacted"],
-    ["attempted", "contacted"],
-    ["new", "new"],
-  ];
-  for (const [needle, id] of STAGE_MAP) {
-    if (stageRaw.includes(needle)) {
-      stage = id;
-      break;
-    }
-  }
-
-  if (stage === "new" || stage === "not_interested") {
-    return null;
-  }
-  if (stage === "closed_won") return "Conversion";
-  if (stage === "negotiation") return "Negotiation";
-  if (stage === "proposal") return "Meeting";
-  if (stage === "qualified") return "Qualified";
-  if (stage === "contacted") return "Contacted";
-
-  return null;
+  const stageId = mapStageToId(row.pipeline_stage || row.status, row.status);
+  if (stageId === "not_interested") return null;
+  return KANBAN_TO_FUNNEL_COL[stageId] || "Contacted";
 }
 
 function mapLeadToTemperature(row) {
@@ -154,26 +182,35 @@ function buildPipelineStatusGrid(rows) {
   };
 }
 
-async function queryPipelineLeadRows(tenantId, rangeKey = "week", service = "All Services", employee = "All Employees") {
+async function queryPipelineLeadRows(tenantId, rangeKey = "week", service = "All Services", employee = "All Employees", periodOptions = {}) {
   const params = [tenantId];
-  let where = "l.tenant_id = $1 AND l.is_deleted = 0";
+  const whereParts = ["l.tenant_id = $1 AND l.is_deleted = 0"];
 
   if (service && service !== "All Services") {
     params.push(`%${service}%`);
     const idx = params.length;
-    where += ` AND (l.form_name LIKE $${idx} OR l.keyword LIKE $${idx} OR l.source LIKE $${idx})`;
+    whereParts.push(`(l.form_name LIKE $${idx} OR l.keyword LIKE $${idx} OR l.source LIKE $${idx})`);
   }
 
   if (employee && employee !== "All Employees") {
     params.push(employee);
     const idx = params.length;
-    where += ` AND l.assigned_to = (SELECT id FROM employees WHERE name = $${idx} LIMIT 1)`;
+    whereParts.push(`l.assigned_to = (SELECT id FROM employees WHERE tenant_id = $1 AND name = $${idx} LIMIT 1)`);
   }
+
+  appendLeadPeriodFilter(whereParts, params, {
+    period: periodOptions.period || rangeKey,
+    rangeKey,
+    startDate: periodOptions.startDate,
+    endDate: periodOptions.endDate,
+    dateMode: periodOptions.dateMode,
+    clipWeekToMonth: periodOptions.clipWeekToMonth,
+  });
 
   const result = await pool.query(
     `SELECT l.pipeline_stage, l.status, l.temperature, l.priority, l.form_name
      FROM leads l
-     WHERE ${where}`,
+     WHERE ${whereParts.join(" AND ")}`,
     params,
   );
 
@@ -195,7 +232,14 @@ async function queryPipelineLeadRows(tenantId, rangeKey = "week", service = "All
 }
 
 async function getPipelineStatusGrid(tenantId = TENANT, options = {}) {
-  const { rangeKey = "week", service = "All Services", employee = "All Employees" } = options;
+  const {
+    rangeKey = "week",
+    service = "All Services",
+    employee = "All Employees",
+    period,
+    startDate,
+    endDate,
+  } = options;
   const emptyGrid = buildPipelineStatusGrid([]);
 
   if (!(await dbReady())) {
@@ -230,7 +274,14 @@ async function getPipelineStatusGrid(tenantId = TENANT, options = {}) {
   }
 
   try {
-    const rows = await queryPipelineLeadRows(tenantId, rangeKey, service, employee);
+    // Match Total Leads KPI: all leads created in the period, bucketed by CRM pipeline stage.
+    const rows = await queryPipelineLeadRows(tenantId, rangeKey, service, employee, {
+      period: period || rangeKey,
+      startDate,
+      endDate,
+      dateMode: "created",
+      clipWeekToMonth: true,
+    });
     const built = buildPipelineStatusGrid(rows);
     return {
       success: true,
@@ -252,51 +303,139 @@ async function dbReady() {
   }
 }
 
-async function queryLeadsStats(tenantId) {
+async function queryLeadsStats(tenantId, periodOptions = null) {
+  const periodOpts = periodOptions || { period: "all" };
+  const leadCountOpts = { ...periodOpts, dateMode: "created", clipWeekToMonth: true };
+  const leadParams = [tenantId];
+  const leadWhere = ["tenant_id = $1 AND is_deleted = 0"];
+  appendLeadPeriodFilter(leadWhere, leadParams, leadCountOpts, null);
+
+  const callParams = [tenantId];
+  const callWhere = ["tenant_id = $1"];
+  appendColumnPeriodFilter(callWhere, callParams, periodOpts, "COALESCE(started_at, created_at)");
+
+  const cashParams = [tenantId];
+  const cashWhere = ["tenant_id = $1"];
+  appendColumnPeriodFilter(cashWhere, cashParams, periodOpts, "COALESCE(payment_at, created_at)");
+
   const [result, cashResult, callsResult] = await Promise.all([
     pool.query(
       `SELECT
         COUNT(*) AS total_leads,
         COALESCE(SUM(expected_revenue), 0) AS pipeline_value,
         SUM(CASE WHEN ${PIPELINE_QUALIFIED_LEAD_SQL.replace(/\bl\./g, "")} THEN 1 ELSE 0 END) AS qualified,
+        SUM(CASE WHEN ${CONTACTED_LEAD_SQL.replace(/\bl\./g, "")} THEN 1 ELSE 0 END) AS contacted,
         SUM(CASE WHEN ${CONVERTED_LEAD_SQL} THEN 1 ELSE 0 END) AS conversions,
         COALESCE(SUM(CASE WHEN ${CONVERTED_LEAD_SQL} THEN expected_revenue ELSE 0 END), 0) AS revenue
        FROM leads
-       WHERE tenant_id = $1 AND is_deleted = 0`,
-      [tenantId],
+       WHERE ${leadWhere.join(" AND ")}`,
+      leadParams,
     ),
     pool.query(
       `SELECT COALESCE(SUM(amount), 0) AS cash_collected
        FROM cash_collections
-       WHERE tenant_id = $1`,
-      [tenantId],
+       WHERE ${cashWhere.join(" AND ")}`,
+      cashParams,
     ),
     pool.query(
-      `SELECT COUNT(*) AS total_calls
+      `SELECT
+         COUNT(*) AS total_calls,
+         SUM(CASE WHEN duration_sec > 0 THEN 1 ELSE 0 END) AS connected_calls,
+         SUM(CASE WHEN LOWER(direction) IN ('out', 'outbound', 'outgoing')
+           AND duration_sec >= ${CALL_CONVERSATION_MIN_SEC} THEN 1 ELSE 0 END) AS conversation_calls,
+         COUNT(DISTINCT CASE
+           WHEN lead_id IS NOT NULL
+             AND LOWER(direction) IN ('out', 'outbound', 'outgoing')
+             AND duration_sec >= ${CALL_CONVERSATION_MIN_SEC}
+           THEN lead_id END) AS conversation_leads
        FROM employee_calls
-       WHERE tenant_id = $1`,
-      [tenantId],
-    )
+       WHERE ${callWhere.join(" AND ")}`,
+      callParams,
+    ),
   ]);
 
   const row = result.rows[0] || {};
   row.cash_collected = cashResult.rows[0]?.cash_collected || 0;
   row.total_calls = callsResult.rows[0]?.total_calls || 0;
+  row.connected_calls = callsResult.rows[0]?.connected_calls || 0;
+  row.conversation_calls = callsResult.rows[0]?.conversation_calls || 0;
+  row.conversation_leads = callsResult.rows[0]?.conversation_leads || 0;
   return row;
 }
 
-async function queryLeaderboard(tenantId, rangeKey, limit = 3) {
+function formatFilterRangeFromStats(stats, leaderboard = []) {
+  const total = Number(stats.total_leads) || 0;
+  const qualified = Number(stats.qualified) || 0;
+  const contacted = Number(stats.contacted) || 0;
+  const conversationLeads = Number(stats.conversation_leads) || 0;
+  const conversions = Number(stats.conversions) || 0;
+  const revenue = Number(stats.revenue) || 0;
+  const pipeline = Number(stats.pipeline_value) || 0;
+  const cashCollected = Number(stats.cash_collected) || 0;
+  const totalCalls = Number(stats.total_calls) || 0;
+  const connectedCalls = Number(stats.connected_calls) || 0;
+
+  const pickup = totalCalls > 0
+    ? Math.min(100, Math.round((connectedCalls / totalCalls) * 100))
+    : 0;
+
+  const qualNumerator = Math.max(qualified, conversationLeads);
+  let qualification = total > 0
+    ? Math.min(100, Math.round((qualNumerator / total) * 100))
+    : 0;
+  if (qualification === 0 && contacted > 0 && total > 0) {
+    qualification = Math.min(100, Math.round((contacted / total) * 100));
+  }
+
+  const conversion = total > 0 ? Math.min(100, Math.round((conversions / total) * 100)) : 0;
+
+  return {
+    kpis: [
+      { label: "Total Revenue", value: formatINR(revenue), icon: "DollarSign" },
+      { label: "Cash Collected", value: formatINR(cashCollected), icon: "DollarSign" },
+      { label: "Total Leads", value: String(total), icon: "Users" },
+      { label: "Total Calls Made", value: String(stats.total_calls || 0), icon: "Phone" },
+      { label: "Qualified Leads", value: String(qualified), icon: "FileText" },
+      { label: "Pipeline Value", value: formatINR(pipeline), icon: "DollarSign" },
+      { label: "Closings", value: String(conversions), icon: "Trophy" },
+    ],
+    leaderboard,
+    metrics: {
+      pickup,
+      qualification,
+      conversion,
+    },
+    insights: [],
+    activity: [],
+  };
+}
+
+async function buildFilterRangeForPeriod(tenantId, periodKey, options = {}) {
+  const leadCountOpts = { period: periodKey, ...options, dateMode: "created", clipWeekToMonth: true };
+  const [stats, leaderboard] = await Promise.all([
+    queryLeadsStats(tenantId, leadCountOpts),
+    queryLeaderboard(tenantId, periodKey, 3, leadCountOpts),
+  ]);
+  return formatFilterRangeFromStats(stats, leaderboard);
+}
+
+async function queryLeaderboard(tenantId, rangeKey = "month", limit = 3, options = {}) {
+  const params = [tenantId];
+  const leadJoinParts = ["l.assigned_to = e.id", "l.is_deleted = 0", "l.tenant_id = $1"];
+  appendLeadPeriodFilter(leadJoinParts, params, { period: rangeKey, ...options }, "l");
+  const leadJoin = leadJoinParts.join(" AND ");
+
   const result = await pool.query(
     `SELECT e.name, e.id,
       COUNT(l.id) AS leads,
       SUM(CASE WHEN ${CONVERTED_LEAD_SQL_ALIASED} THEN 1 ELSE 0 END) AS conv,
       COALESCE(SUM(CASE WHEN ${CONVERTED_LEAD_SQL_ALIASED} THEN l.expected_revenue ELSE 0 END), 0) AS rev
      FROM employees e
-     LEFT JOIN leads l ON l.assigned_to = e.id AND l.is_deleted = 0 AND l.tenant_id = $1
+     LEFT JOIN leads l ON ${leadJoin}
      WHERE e.tenant_id = $1 AND (LOWER(COALESCE(e.status, 'active')) = 'active')
      GROUP BY e.id, e.name
      ORDER BY conv DESC, leads DESC, e.name ASC`,
-    [tenantId],
+    params,
   );
 
   let rows = result.rows.slice(0, limit);
@@ -324,44 +463,27 @@ async function queryLeaderboard(tenantId, rangeKey, limit = 3) {
 }
 
 async function buildFilterDataFromDb(tenantId) {
-  const [stats, leaderboard] = await Promise.all([
-    queryLeadsStats(tenantId),
-    queryLeaderboard(tenantId, "all"),
+  const [today, week, month] = await Promise.all([
+    buildFilterRangeForPeriod(tenantId, "today"),
+    buildFilterRangeForPeriod(tenantId, "week"),
+    buildFilterRangeForPeriod(tenantId, "month"),
   ]);
 
-  const total = Number(stats.total_leads) || 0;
-  const qualified = Number(stats.qualified) || 0;
-  const conversions = Number(stats.conversions) || 0;
-  const revenue = Number(stats.revenue) || 0;
-  const pipeline = Number(stats.pipeline_value) || 0;
-  const cashCollected = Number(stats.cash_collected) || 0;
-  const convRate = total ? Math.round((conversions / total) * 100) : 0;
+  return { today, week, month };
+}
 
-  const rangeData = {
-    kpis: [
-      { label: "Total Revenue", value: formatINR(revenue), icon: "DollarSign" },
-      { label: "Cash Collected", value: formatINR(cashCollected), icon: "DollarSign" },
-      { label: "Total Leads", value: String(total), icon: "Users" },
-      { label: "Total Calls Made", value: String(stats.total_calls || 0), icon: "Phone" },
-      { label: "Qualified Leads", value: String(qualified), icon: "FileText" },
-      { label: "Pipeline Value", value: formatINR(pipeline), icon: "DollarSign" },
-      { label: "Closings", value: String(conversions), icon: "Trophy" },
-    ],
-    leaderboard: leaderboard,
-    metrics: {
-      pickup: Math.min(95, 60 + Math.round(total / 10)),
-      qualification: total ? Math.round((qualified / total) * 100) : 0,
-      conversion: convRate,
-    },
-    insights: [],
-    activity: [],
-  };
-
-  return {
-    today: rangeData,
-    week: rangeData,
-    month: rangeData,
-  };
+async function getFilterRangeForPeriod(tenantId = TENANT, options = {}) {
+  const period = normalizeRangeKey(options.period || options.rangeKey || "month");
+  if (!(await dbReady())) {
+    return { success: true, source: "empty", ...emptyFilterRange() };
+  }
+  try {
+    const range = await buildFilterRangeForPeriod(tenantId, period, options);
+    return { success: true, source: "database", ...range };
+  } catch (err) {
+    console.error("getFilterRangeForPeriod error:", err.message);
+    return { success: true, source: "error", ...emptyFilterRange() };
+  }
 }
 
 async function getAiInsightsFromDb(tenantId, context = "dashboard") {
@@ -629,7 +751,12 @@ async function updatePipelineLeadStage(leadId, stage, tenantId = TENANT) {
   return { success: true };
 }
 
-async function getReportsBundle(tenantId = TENANT) {
+async function getReportsBundle(tenantId = TENANT, options = {}) {
+  const periodOpts = {
+    period: options.period || options.rangeKey || "month",
+    startDate: options.startDate,
+    endDate: options.endDate,
+  };
   const empty = {
     kpis: {
       totalRevenue: { value: "₹0", growth: "—", comparison: "vs last month" },
@@ -647,31 +774,44 @@ async function getReportsBundle(tenantId = TENANT) {
   if (!(await dbReady())) return { source: "empty", ...empty, success: true };
 
   try {
-    const stats = await queryLeadsStats(tenantId, "month");
+    const stats = await queryLeadsStats(tenantId, periodOpts);
     const total = Number(stats.total_leads) || 0;
     const conversions = Number(stats.conversions) || 0;
     const revenue = Number(stats.revenue) || 0;
 
-    const sources = await pool.query(
-      `SELECT source, COUNT(*) AS leads FROM leads WHERE tenant_id = $1 AND is_deleted = 0 GROUP BY source ORDER BY leads DESC LIMIT 8`,
-      [tenantId],
-    );
+    const sourceParams = [tenantId];
+    const sourceWhere = ["tenant_id = $1 AND is_deleted = 0"];
+    appendLeadPeriodFilter(sourceWhere, sourceParams, periodOpts, null);
 
-    const stages = await pool.query(
-      `SELECT pipeline_stage AS stage, COUNT(*) AS count FROM leads WHERE tenant_id = $1 AND is_deleted = 0 GROUP BY pipeline_stage`,
-      [tenantId],
-    );
+    const stageParams = [tenantId];
+    const stageWhere = ["tenant_id = $1 AND is_deleted = 0"];
+    appendLeadPeriodFilter(stageWhere, stageParams, periodOpts, null);
 
-    const team = await pool.query(
-      `SELECT e.id, e.name,
-        COALESCE(SUM(CASE WHEN (${CONVERTED_LEAD_SQL_ALIASED.replace(/\n/g, " ")}) THEN l.expected_revenue ELSE 0 END), 0) AS revenue,
-        SUM(CASE WHEN (${CONVERTED_LEAD_SQL_ALIASED.replace(/\n/g, " ")}) THEN 1 ELSE 0 END) AS deals
-       FROM employees e
-       LEFT JOIN leads l ON l.assigned_to = e.id AND l.is_deleted = 0
-       WHERE e.tenant_id = $1
-       GROUP BY e.id, e.name ORDER BY revenue DESC LIMIT 10`,
-      [tenantId],
-    );
+    const teamParams = [tenantId];
+    const leadJoinParts = ["l.assigned_to = e.id", "l.is_deleted = 0", "l.tenant_id = $1"];
+    appendLeadPeriodFilter(leadJoinParts, teamParams, periodOpts, "l");
+    const teamLeadJoin = leadJoinParts.join(" AND ");
+
+    const [sources, stages, team] = await Promise.all([
+      pool.query(
+        `SELECT source, COUNT(*) AS leads FROM leads WHERE ${sourceWhere.join(" AND ")} GROUP BY source ORDER BY leads DESC LIMIT 8`,
+        sourceParams,
+      ),
+      pool.query(
+        `SELECT pipeline_stage AS stage, COUNT(*) AS count FROM leads WHERE ${stageWhere.join(" AND ")} GROUP BY pipeline_stage`,
+        stageParams,
+      ),
+      pool.query(
+        `SELECT e.id, e.name,
+          COALESCE(SUM(CASE WHEN (${CONVERTED_LEAD_SQL_ALIASED.replace(/\n/g, " ")}) THEN l.expected_revenue ELSE 0 END), 0) AS revenue,
+          SUM(CASE WHEN (${CONVERTED_LEAD_SQL_ALIASED.replace(/\n/g, " ")}) THEN 1 ELSE 0 END) AS deals
+         FROM employees e
+         LEFT JOIN leads l ON ${teamLeadJoin}
+         WHERE e.tenant_id = $1
+         GROUP BY e.id, e.name ORDER BY revenue DESC LIMIT 10`,
+        teamParams,
+      ),
+    ]);
 
     const dbInsights = await getAiInsightsFromDb(tenantId, "reports");
 
@@ -771,7 +911,22 @@ async function createService(tenantId, data) {
   const metadata = JSON.stringify(data);
   await pool.query(
     `INSERT INTO services (id, tenant_id, name, category, category_label, status, description, revenue, leads, converted, conv_rate, price_num, price_label, icon, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     ON DUPLICATE KEY UPDATE
+       name = VALUES(name),
+       category = VALUES(category),
+       category_label = VALUES(category_label),
+       status = VALUES(status),
+       description = VALUES(description),
+       revenue = VALUES(revenue),
+       leads = VALUES(leads),
+       converted = VALUES(converted),
+       conv_rate = VALUES(conv_rate),
+       price_num = VALUES(price_num),
+       price_label = VALUES(price_label),
+       icon = VALUES(icon),
+       metadata = VALUES(metadata),
+       updated_at = NOW()`,
     [
       id, tenantId, data.name, data.category || "ai", data.categoryLabel || "",
       data.status || "ACTIVE", data.description || "", data.revenue || 0,
@@ -780,6 +935,24 @@ async function createService(tenantId, data) {
     ],
   );
   return { success: true, service: { ...data, id } };
+}
+
+async function updateServiceDistributionIndex(tenantId, serviceId, rrIndex) {
+  if (!(await dbReady())) return null;
+  const result = await pool.query(
+    `SELECT metadata FROM services WHERE tenant_id = $1 AND id = $2 LIMIT 1`,
+    [tenantId, serviceId],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  const meta = typeof row.metadata === "string" ? JSON.parse(row.metadata) : (row.metadata || {});
+  meta.distributionRrIndex = rrIndex;
+  meta.lastDistributedAt = new Date().toISOString();
+  await pool.query(
+    `UPDATE services SET metadata = $1, updated_at = NOW() WHERE tenant_id = $2 AND id = $3`,
+    [JSON.stringify(meta), tenantId, serviceId],
+  );
+  return meta;
 }
 
 async function listForms(tenantId = TENANT) {
@@ -1042,7 +1215,14 @@ async function getIncentivesData(tenantId = TENANT, month) {
 }
 
 async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
-  const { employee = "All Employees", service = "All Services" } = options;
+  const {
+    employee = "All Employees",
+    service = "All Services",
+    period = "month",
+    rangeKey,
+    startDate,
+    endDate,
+  } = options;
 
   // If DB not available, return empty zeros — no mock data
   if (!(await dbReady())) {
@@ -1069,20 +1249,42 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
 
   // ── Build WHERE filters ──────────────────────────────────────────────────────
   let leadsParams = [tenantId];
-  let leadsWhere  = "l.tenant_id = $1 AND l.is_deleted = 0";
+  const leadsWhereParts = ["l.tenant_id = $1 AND l.is_deleted = 0"];
 
   if (employee && employee !== "All Employees") {
     leadsParams.push(employee);
-    leadsWhere += ` AND l.assigned_to = (SELECT id FROM employees WHERE tenant_id = $1 AND name = $${leadsParams.length} LIMIT 1)`;
+    leadsWhereParts.push(`l.assigned_to = (SELECT id FROM employees WHERE tenant_id = $1 AND name = $${leadsParams.length} LIMIT 1)`);
   }
   if (service && service !== "All Services") {
     leadsParams.push(`%${service}%`);
     const si = leadsParams.length;
-    leadsWhere += ` AND (l.form_name LIKE $${si} OR l.keyword LIKE $${si} OR l.source LIKE $${si})`;
+    leadsWhereParts.push(`(l.form_name LIKE $${si} OR l.keyword LIKE $${si} OR l.source LIKE $${si})`);
   }
+
+  appendLeadPeriodFilter(leadsWhereParts, leadsParams, {
+    period: period || rangeKey || "month",
+    rangeKey,
+    startDate,
+    endDate,
+  });
+  const leadsWhere = leadsWhereParts.join(" AND ");
 
   let callsParams = [tenantId];
   let callsWhere  = "tenant_id = $1";
+  const callsPeriod = normalizeRangeKey(period || rangeKey || "month");
+  const callActivityCol = "COALESCE(started_at, created_at)";
+  if (callsPeriod === "custom" && startDate && endDate) {
+    callsParams.push(startDate, endDate);
+    callsWhere += ` AND DATE(${callActivityCol}) >= $2 AND DATE(${callActivityCol}) <= $3`;
+  } else if (callsPeriod !== "all") {
+    const callFilter = buildPeriodDateFilter({
+      period: callsPeriod,
+      column: callActivityCol,
+      paramOffset: 2,
+    });
+    callsWhere += ` AND ${callFilter.clause}`;
+    callsParams.push(...callFilter.params);
+  }
   if (employee && employee !== "All Employees") {
     callsParams.push(employee);
     callsWhere += ` AND employee_id = (SELECT id FROM employees WHERE tenant_id = $1 AND name = $${callsParams.length} LIMIT 1)`;
@@ -1090,12 +1292,25 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
 
   let meetingsParams = [tenantId];
   let meetingsWhere  = "tenant_id = $1";
+  const meetingActivityCol = "COALESCE(scheduled_at, created_at)";
+  if (callsPeriod === "custom" && startDate && endDate) {
+    meetingsParams.push(startDate, endDate);
+    meetingsWhere += ` AND DATE(${meetingActivityCol}) >= $2 AND DATE(${meetingActivityCol}) <= $3`;
+  } else if (callsPeriod !== "all") {
+    const meetingFilter = buildPeriodDateFilter({
+      period: callsPeriod,
+      column: meetingActivityCol,
+      paramOffset: 2,
+    });
+    meetingsWhere += ` AND ${meetingFilter.clause}`;
+    meetingsParams.push(...meetingFilter.params);
+  }
   if (employee && employee !== "All Employees") {
     meetingsParams.push(employee);
     meetingsWhere += ` AND employee_id = (SELECT id FROM employees WHERE tenant_id = $1 AND name = $${meetingsParams.length} LIMIT 1)`;
   }
 
-  // ── Run queries in parallel ─────────────────────────────────────────────────
+  // ── Run SQL KPI queries in parallel; kanban opp is best-effort ─────────────
   const [leadsResult, callsResult, meetingsResult] = await Promise.all([
     pool.query(
       `SELECT
@@ -1112,13 +1327,7 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
              THEN 1 ELSE 0 END)                                                          AS converted_leads,
          SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('proposal sent','negotiation')
              OR   LOWER(COALESCE(status,''))  LIKE '%proposal%'
-             THEN 1 ELSE 0 END)                                                          AS proposal_sent,
-              SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'lead')) IN ('lead', 'new lead', 'not_pick', 'not pick')
-              THEN 1 ELSE 0 END)                                                          AS not_contacted,
-          SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('conversation_2min', 'conversation', 'connected')
-              THEN 1 ELSE 0 END)                                                          AS no_meeting,
-          SUM(CASE WHEN LOWER(COALESCE(pipeline_stage,'')) IN ('meeting_booked', 'meeting booked', 'meeting_done', 'meeting done', 'proposal_sent', 'proposal sent', 'objection')
-              THEN 1 ELSE 0 END)                                                          AS stuck_pipeline
+             THEN 1 ELSE 0 END)                                                          AS proposal_sent
         FROM leads l
         WHERE ${leadsWhere}`,
       leadsParams
@@ -1136,8 +1345,28 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
     ),
   ]);
 
+  let kanbanOpp = { totals: { not_contacted: 0, no_meeting: 0, stuck_pipeline: 0 }, grouped: {} };
+  try {
+    kanbanOpp = await loadKanbanOppData(tenantId, {
+      employee,
+      service,
+      period: period || rangeKey || "month",
+      rangeKey,
+      startDate,
+      endDate,
+    });
+  } catch (err) {
+    console.error("loadKanbanOppData error (sales-kpis):", err);
+  }
+
+  const funnelGrid = buildPipelineStatusGridFromKanban(kanbanOpp.grouped || {});
+  const kanbanScopedLeads = funnelGrid.totalLeads || 0;
+  const kanbanQualified = funnelGrid.stageTotals?.Qualified || 0;
+  const kanbanConversions = funnelGrid.conversions || 0;
+
   // ── Compute values ──────────────────────────────────────────────────────────
   const row            = leadsResult.rows[0]   || {};
+  const oppTotals      = kanbanOpp.totals || { not_contacted: 0, no_meeting: 0, stuck_pipeline: 0 };
   const totalLeads     = Number(row.total_leads     || 0);
   const qualifiedLeads = Number(row.qualified_leads || 0);
   const convertedLeads = Number(row.converted_leads || 0);
@@ -1145,10 +1374,14 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
   const connectedCalls = Number(callsResult.rows[0]?.connected_calls || 0);
   const meetingsDone   = Number(meetingsResult.rows[0]?.meetings_done || 0);
 
-  // Rates — all capped 0-100
-  const pickupRate = totalCalls     > 0 ? Math.min(100, Math.round((connectedCalls / totalCalls)     * 100)) : 0;
-  const qualRate   = totalLeads     > 0 ? Math.min(100, Math.round((qualifiedLeads / totalLeads)     * 100)) : 0;
-  const convRate   = totalLeads     > 0 ? Math.min(100, Math.round((convertedLeads / totalLeads)     * 100)) : 0;
+  // Rates — kanban-scoped when available so Sales funnel matches Pipeline board
+  const pickupRate = totalCalls > 0 ? Math.min(100, Math.round((connectedCalls / totalCalls) * 100)) : 0;
+  const qualRate = kanbanScopedLeads > 0
+    ? Math.min(100, Math.round((kanbanQualified / kanbanScopedLeads) * 100))
+    : (totalLeads > 0 ? Math.min(100, Math.round((qualifiedLeads / totalLeads) * 100)) : 0);
+  const convRate = kanbanScopedLeads > 0
+    ? Math.min(100, Math.round((kanbanConversions / kanbanScopedLeads) * 100))
+    : (totalLeads > 0 ? Math.min(100, Math.round((convertedLeads / totalLeads) * 100)) : 0);
 
   return {
     success: true,
@@ -1162,9 +1395,9 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
       { label: "Revenue",         value: formatINR(row.revenue    || 0)            },
     ],
     oppData: {
-      notContacted:  Number(row.not_contacted || 0),
-      noMeeting:     Number(row.no_meeting    || 0),
-      stuckPipeline: Number(row.stuck_pipeline || 0),
+      notContacted:  oppTotals.not_contacted,
+      noMeeting:     oppTotals.no_meeting,
+      stuckPipeline: oppTotals.stuck_pipeline,
     },
     metrics: [
       { label: "Pickup Rate",        shortLabel: "Pickup",  value: pickupRate, rgb: "124,58,237", desc: "Calls answered vs dialed",   trend: `${pickupRate}% pickup` },
@@ -1176,45 +1409,23 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
 
 
 async function getOppCategoryLeads(tenantId = TENANT, options = {}) {
-  const { category, employee, service } = options;
+  const { category, employee, service, period = "month", rangeKey, startDate, endDate } = options;
 
-  let params = [tenantId];
-  let categoryWhere = "1=1";
-
-  if (category === "not_contacted") {
-    categoryWhere = "LOWER(COALESCE(l.pipeline_stage, 'lead')) IN ('lead', 'new lead', 'not_pick', 'not pick')";
-  } else if (category === "no_meeting") {
-    categoryWhere = "LOWER(COALESCE(l.pipeline_stage, '')) IN ('conversation_2min', 'conversation', 'connected')";
-  } else if (category === "stuck_pipeline") {
-    categoryWhere = "LOWER(COALESCE(l.pipeline_stage, '')) IN ('meeting_booked', 'meeting booked', 'meeting_done', 'meeting done', 'proposal_sent', 'proposal sent', 'objection')";
+  if (!(await dbReady())) {
+    return { success: true, leads: [] };
   }
 
-  let extraWhere = "";
+  const { leads } = await loadKanbanOppData(tenantId, {
+    category,
+    employee,
+    service,
+    period: period || rangeKey || "month",
+    rangeKey,
+    startDate,
+    endDate,
+  });
 
-  if (employee && employee !== "All Employees") {
-    params.push(employee);
-    extraWhere += ` AND l.assigned_to = (SELECT id FROM employees WHERE name = $${params.length} LIMIT 1)`;
-  }
-  if (service && service !== "All Services") {
-    params.push(`%${service}%`);
-    extraWhere += ` AND (l.form_name LIKE $${params.length} OR l.keyword LIKE $${params.length} OR l.source LIKE $${params.length})`;
-  }
-
-  const result = await pool.query(
-    `SELECT l.id, l.lead_name, l.phone, l.email, l.city,
-            l.pipeline_stage, l.status, l.temperature,
-            l.expected_revenue, l.interactions, l.created_at,
-            e.name AS assigned_to_name
-     FROM leads l
-     LEFT JOIN employees e ON e.id = l.assigned_to
-     WHERE l.tenant_id = $1 AND l.is_deleted = 0
-       AND ${categoryWhere}${extraWhere}
-     ORDER BY l.created_at DESC
-     LIMIT 100`,
-    params
-  );
-
-  return { success: true, leads: result.rows };
+  return { success: true, leads };
 }
 
 module.exports = {
@@ -1222,6 +1433,7 @@ module.exports = {
   formatINR,
   dbReady,
   getDashboardBundle,
+  getFilterRangeForPeriod,
   getPipelineLeads,
   listLeadTasks,
   createLeadTask,
@@ -1233,6 +1445,7 @@ module.exports = {
   saveSettings,
   listServices,
   createService,
+  updateServiceDistributionIndex,
   listForms,
   createForm,
   updateForm,

@@ -142,8 +142,22 @@ function buildLeadFunnel(stats) {
     { name: "Assigned", value: stats.totalLeads || 0 },
     { name: "Contacted", value: stats.contacted || 0 },
     { name: "Qualified", value: stats.pipelineQualified ?? stats.qualified ?? 0 },
-    { name: "Meeting", value: stats.totalMeetings || 0 },
+    { name: "Meeting", value: stats.totalMeetings || stats.booked || 0 },
     { name: "Converted", value: stats.converted || 0 },
+  ];
+}
+
+/** Funnel aligned with Callyzer Call Reporting (dials → 2min+ → meetings → won). */
+function buildCallyzerFunnel(leadStats = {}, callStats = {}) {
+  return [
+    { name: "Assigned", value: Number(leadStats.totalLeads) || 0 },
+    { name: "Contacted", value: Number(callStats.totalCalls) || 0 },
+    { name: "Qualified", value: Number(callStats.conversations5MinPlus) || 0 },
+    {
+      name: "Meeting",
+      value: Number(leadStats.booked ?? leadStats.meetingBooked ?? leadStats.pipelineQualified) || 0,
+    },
+    { name: "Converted", value: Number(leadStats.converted) || 0 },
   ];
 }
 
@@ -209,6 +223,7 @@ const PIPELINE_QUALIFIED_LEAD_SQL = `
 module.exports = {
   computeLeadStats,
   buildLeadFunnel,
+  buildCallyzerFunnel,
   buildStageBreakdown,
   CONTACTED_LEAD_SQL,
   ACTIVE_LEAD_SQL,

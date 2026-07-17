@@ -49,20 +49,55 @@ function callStatsAggSql(prefix = "") {
   return `
   COUNT(*) AS total_calls,
   SUM(CASE WHEN ${p}duration_sec > 0 THEN 1 ELSE 0 END) AS connected_calls,
-  SUM(CASE WHEN LOWER(${p}direction) IN ('in', 'inbound') THEN 1 ELSE 0 END) AS incoming_calls,
-  SUM(CASE WHEN LOWER(${p}direction) IN ('out', 'outbound') THEN 1 ELSE 0 END) AS outgoing_calls,
+  SUM(CASE WHEN LOWER(${p}direction) IN ('in', 'inbound', 'incoming') THEN 1 ELSE 0 END) AS incoming_calls,
+  SUM(CASE WHEN LOWER(${p}direction) IN ('out', 'outbound', 'outgoing') THEN 1 ELSE 0 END) AS outgoing_calls,
   SUM(CASE WHEN ${p}duration_sec = 0 OR ${p}duration_sec IS NULL THEN 1 ELSE 0 END) AS missed_calls,
   SUM(CASE WHEN ${p}outcome = 'rejected' THEN 1 ELSE 0 END) AS rejected_calls,
-  SUM(CASE WHEN LOWER(${p}direction) IN ('out', 'outbound') AND (${p}duration_sec = 0 OR ${p}duration_sec IS NULL) THEN 1 ELSE 0 END) AS not_pickup_by_client,
+  SUM(CASE WHEN (
+      LOWER(${p}direction) IN ('out', 'outbound', 'outgoing')
+      OR LOWER(COALESCE(${p}outcome, '')) IN ('rejected', 'not connected', 'not pick', 'no answer', 'busy', 'unanswered', 'not answered')
+    ) AND (
+      ${p}duration_sec = 0 OR ${p}duration_sec IS NULL
+      OR (
+        COALESCE(${p}duration_sec, 0) < ${CALL_CONVERSATION_MIN_SEC}
+        AND LOWER(COALESCE(${p}outcome, '')) IN ('rejected', 'not connected', 'not pick', 'no answer', 'busy', 'unanswered', 'not answered')
+      )
+    ) THEN 1 ELSE 0 END) AS not_pickup_by_client,
   COUNT(DISTINCT COALESCE(${p}lead_id, ${p}callyzer_call_id, ${p}id)) AS unique_clients,
   SUM(${p}duration_sec) AS total_duration_sec,
   SUM(CASE WHEN LOWER(${p}direction) IN ('in', 'inbound') THEN ${p}duration_sec ELSE 0 END) AS incoming_duration_sec,
   SUM(CASE WHEN LOWER(${p}direction) IN ('out', 'outbound') THEN ${p}duration_sec ELSE 0 END) AS outgoing_duration_sec,
-  SUM(CASE WHEN ${p}duration_sec >= ${CALL_CONVERSATION_MIN_SEC} THEN 1 ELSE 0 END) AS conversations_5min_plus
+  SUM(CASE WHEN LOWER(${p}direction) IN ('out', 'outbound', 'outgoing') AND ${p}duration_sec >= ${CALL_CONVERSATION_MIN_SEC} THEN 1 ELSE 0 END) AS conversations_5min_plus
 `;
 }
 
 const CALL_STATS_AGG_SQL = callStatsAggSql();
+
+async function queryCallStats(poolConn, { tenantId, employeeId = null, period = "month", month = null }) {
+  const filter = buildPeriodDateFilter({
+    period: month ? "month" : period,
+    month,
+    column: "COALESCE(started_at, created_at)",
+    paramOffset: employeeId != null ? 3 : 2,
+  });
+
+  const params = [tenantId];
+  let employeeSql = "";
+  if (employeeId != null) {
+    params.push(employeeId);
+    employeeSql = " AND employee_id = $2";
+  }
+  params.push(...filter.params);
+
+  const queryText = `
+    SELECT ${CALL_STATS_AGG_SQL}
+    FROM employee_calls
+    WHERE tenant_id = $1${employeeSql} AND ${filter.clause}
+  `;
+
+  const result = await poolConn.query(queryText, params);
+  return mapCallStatsRow(result.rows[0] || {});
+}
 
 function resolvePeriodFilter(period, month, paramOffset = 3) {
   return buildPeriodDateFilter({
@@ -79,4 +114,5 @@ module.exports = {
   callStatsAggSql,
   CALL_STATS_AGG_SQL,
   resolvePeriodFilter,
+  queryCallStats,
 };

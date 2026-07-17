@@ -1,7 +1,7 @@
 const { logger } = require("../config/logger");
 const { isPgReady } = require("../middleware/pgReady");
 const { DEFAULT_TENANT_ID } = require("../repositories/operationalRepo");
-const { processAssignmentQueue, notify, processDueScheduledAssignments } = require("../services/operationalServices");
+const { processAssignmentQueue, notify, processDueScheduledAssignments, distributeServiceLeads } = require("../services/operationalServices");
 const repo = require("../repositories/operationalRepo");
 
 let started = false;
@@ -53,6 +53,20 @@ async function scheduledAssignmentsTick() {
   }
 }
 
+async function serviceDistributionTick() {
+  if (!isPgReady()) return;
+  try {
+    const result = await distributeServiceLeads(DEFAULT_TENANT_ID, {
+      actor: { actorId: "scheduler", actorName: "Service Distribution", actorRole: "system" },
+    });
+    if (result.assigned > 0) {
+      logger.info(`Service distribution assigned ${result.assigned} lead(s) across ${result.services} service(s).`);
+    }
+  } catch (err) {
+    logger.warn(`Service distribution tick failed: ${err.message}`);
+  }
+}
+
 function startSchedulers() {
   if (started) return;
   started = true;
@@ -60,14 +74,17 @@ function startSchedulers() {
   const assignmentMs = Number(process.env.ASSIGNMENT_QUEUE_INTERVAL_MS || 30000);
   const reminderMs = Number(process.env.FOLLOWUP_REMINDER_INTERVAL_MS || 300000);
   const scheduleMs = Number(process.env.SCHEDULED_ASSIGNMENT_INTERVAL_MS || 60000);
+  const serviceDistMs = Number(process.env.SERVICE_DISTRIBUTION_INTERVAL_MS || 600000);
 
   setInterval(processQueueTick, assignmentMs).unref();
   setInterval(followupReminderTick, reminderMs).unref();
   setInterval(scheduledAssignmentsTick, scheduleMs).unref();
+  setInterval(serviceDistributionTick, serviceDistMs).unref();
 
   processQueueTick();
   followupReminderTick();
   scheduledAssignmentsTick();
+  serviceDistributionTick();
   logger.info("Operational schedulers started");
 }
 

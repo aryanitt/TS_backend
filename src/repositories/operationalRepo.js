@@ -495,6 +495,42 @@ async function listAllLeads(tenantId, filters = {}, { pageSize = 500, maxPages =
   return { items: all, total: total || all.length };
 }
 
+async function findLeadsByIds(tenantId, ids = []) {
+  const list = [...new Set((ids || []).map((id) => Number(id)).filter(Boolean))];
+  if (!list.length) return [];
+  const result = await pool.query(
+    `SELECT ${LEAD_SELECT} FROM leads l
+     LEFT JOIN employees e ON e.id = l.assigned_to
+     WHERE l.tenant_id = $1 AND l.is_deleted = 0 AND l.id = ANY($2::int[])`,
+    [tenantId, list],
+  );
+  return result.rows.map((r) => mapLead(r, joinEmployee(r)));
+}
+
+/** New/pending assignments for Lead column (pipeline loads these only, not full CRM). */
+async function listAssignedNewLeadsForPipeline(tenantId, employeeId = null) {
+  const params = [tenantId];
+  let employeeSql = "";
+  if (employeeId != null) {
+    params.push(employeeId);
+    employeeSql = " AND l.assigned_to = $2";
+  }
+  const result = await pool.query(
+    `SELECT ${LEAD_SELECT} FROM leads l
+     LEFT JOIN employees e ON e.id = l.assigned_to
+     WHERE l.tenant_id = $1 AND l.is_deleted = 0 ${employeeSql}
+       AND l.assignment_status IN ('assigned', 'pending', 'unassigned')
+       AND (
+         LOWER(COALESCE(l.status, '')) IN ('new', 'new lead')
+         OR LOWER(COALESCE(l.pipeline_stage, '')) IN ('new', 'new lead', 'lead')
+       )
+     ORDER BY l.assigned_at IS NULL, l.assigned_at DESC, l.created_at DESC
+     LIMIT 800`,
+    params,
+  );
+  return result.rows.map((r) => mapLead(r, joinEmployee(r)));
+}
+
 async function updateLead(tenantId, leadId, patch) {
   const fields = [];
   const params = [tenantId, leadId];
@@ -1078,6 +1114,34 @@ async function listCalls(tenantId, employeeId, options = {}) {
   return result.rows.map(mapCall);
 }
 
+async function listCallsForLead(tenantId, lead, options = {}) {
+  const leadId = Number(lead?.id);
+  if (!leadId) return [];
+  const limit = Math.min(Math.max(Number(options.limit) || 200, 1), DEFAULT_CALL_LIST_LIMIT);
+  const phoneDigits = String(lead?.phone || "").replace(/\D/g, "").slice(-10);
+  const params = [tenantId, leadId];
+  let phoneSql = "";
+  if (phoneDigits.length >= 10) {
+    params.push(`%${phoneDigits}`);
+    phoneSql = ` OR (
+      ec.lead_id IS NULL
+      AND l.phone IS NOT NULL
+      AND REPLACE(REPLACE(REPLACE(REPLACE(l.phone, ' ', ''), '+', ''), '-', ''), '(', '') LIKE $3
+    )`;
+  }
+  const result = await pool.query(
+    `SELECT ec.*, l.lead_name AS client_name, l.phone AS client_phone, l.company_name AS client_company
+     FROM employee_calls ec
+     LEFT JOIN leads l ON ec.lead_id = l.id
+     WHERE ec.tenant_id = $1
+       AND (ec.lead_id = $2${phoneSql})
+     ORDER BY COALESCE(ec.started_at, ec.created_at) DESC
+     LIMIT ${limit}`,
+    params,
+  );
+  return result.rows.map(mapCall);
+}
+
 async function findCallByCallyzerId(tenantId, callyzerCallId) {
   const result = await pool.query(
     `SELECT ec.*, l.lead_name AS client_name, l.phone AS client_phone, l.company_name AS client_company
@@ -1299,6 +1363,42 @@ async function listMeetings(tenantId, employeeId) {
   return result.rows.map(mapMeeting);
 }
 
+async function listTenantMeetings(tenantId) {
+  const result = await pool.query(
+    `SELECT * FROM meetings WHERE tenant_id = $1 ORDER BY scheduled_at ASC`,
+    [tenantId],
+  );
+  return result.rows.map(mapMeeting);
+}
+
+async function listTenantCalls(tenantId, options = {}) {
+  const period = options.period ? String(options.period).toLowerCase() : null;
+  const limit = Math.min(Math.max(Number(options.limit) || DEFAULT_CALL_LIST_LIMIT, 1), DEFAULT_CALL_LIST_LIMIT);
+  const params = [tenantId];
+  let periodSql = "";
+
+  if (period && period !== "all") {
+    const filter = buildPeriodDateFilter({
+      period,
+      column: "COALESCE(ec.started_at, ec.created_at)",
+      paramOffset: 2,
+    });
+    periodSql = ` AND ${filter.clause}`;
+    params.push(...filter.params);
+  }
+
+  const result = await pool.query(
+    `SELECT ec.*, l.lead_name AS client_name, l.phone AS client_phone, l.company_name AS client_company
+     FROM employee_calls ec
+     LEFT JOIN leads l ON ec.lead_id = l.id
+     WHERE ec.tenant_id = $1${periodSql}
+     ORDER BY COALESCE(ec.started_at, ec.created_at) DESC
+     LIMIT ${limit}`,
+    params,
+  );
+  return result.rows.map(mapCall);
+}
+
 async function insertFileAsset(data) {
   const result = await pool.query(
     `INSERT INTO file_assets (tenant_id, uploaded_by, entity_type, entity_id, filename, original_name, mime, size, storage_key, url)
@@ -1317,6 +1417,18 @@ async function insertFileAsset(data) {
     ],
   );
   return mapFileAsset(result.rows[0]);
+}
+
+const TEAM_ASSET_TYPE = "team_asset";
+
+async function listTeamAssets(tenantId) {
+  const result = await pool.query(
+    `SELECT * FROM file_assets
+     WHERE tenant_id = $1 AND entity_type = $2
+     ORDER BY created_at DESC`,
+    [tenantId, TEAM_ASSET_TYPE],
+  );
+  return result.rows.map(mapFileAsset);
 }
 
 async function getAdminKpis(tenantId, range = {}) {
@@ -1525,6 +1637,96 @@ async function ping() {
   return true;
 }
 
+function mapWhatsAppScript(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    employeeId: row.employee_id,
+    title: row.title,
+    body: row.body,
+    category: row.category || "General",
+    isActive: Boolean(row.is_active),
+    createdAt: toLocalSqlString(row.created_at),
+    updatedAt: toLocalSqlString(row.updated_at),
+  };
+}
+
+async function listWhatsAppScripts(tenantId, employeeId, { includeInactive = false } = {}) {
+  const params = [tenantId, employeeId];
+  let sql = `SELECT * FROM whatsapp_scripts WHERE tenant_id = $1 AND employee_id = $2`;
+  if (!includeInactive) sql += ` AND is_active = 1`;
+  sql += ` ORDER BY updated_at DESC, id DESC`;
+  const result = await pool.query(sql, params);
+  return result.rows.map(mapWhatsAppScript);
+}
+
+async function findWhatsAppScriptById(tenantId, scriptId) {
+  const result = await pool.query(
+    `SELECT * FROM whatsapp_scripts WHERE id = $1 AND tenant_id = $2`,
+    [scriptId, tenantId],
+  );
+  return mapWhatsAppScript(result.rows[0]);
+}
+
+async function insertWhatsAppScript(data) {
+  const result = await pool.query(
+    `INSERT INTO whatsapp_scripts (tenant_id, employee_id, title, body, category, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [
+      data.tenantId,
+      data.employeeId,
+      data.title,
+      data.body,
+      data.category || "General",
+      data.isActive === false ? 0 : 1,
+    ],
+  );
+  return mapWhatsAppScript(result.rows[0]);
+}
+
+async function updateWhatsAppScript(tenantId, scriptId, employeeId, patch) {
+  const fields = [];
+  const values = [];
+  let idx = 1;
+
+  if (patch.title != null) {
+    fields.push(`title = $${idx++}`);
+    values.push(patch.title);
+  }
+  if (patch.body != null) {
+    fields.push(`body = $${idx++}`);
+    values.push(patch.body);
+  }
+  if (patch.category != null) {
+    fields.push(`category = $${idx++}`);
+    values.push(patch.category);
+  }
+  if (patch.isActive != null) {
+    fields.push(`is_active = $${idx++}`);
+    values.push(patch.isActive ? 1 : 0);
+  }
+
+  if (!fields.length) return findWhatsAppScriptById(tenantId, scriptId);
+
+  values.push(scriptId, tenantId, employeeId);
+  const result = await pool.query(
+    `UPDATE whatsapp_scripts SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $${idx++} AND tenant_id = $${idx++} AND employee_id = $${idx}
+     RETURNING *`,
+    values,
+  );
+  return mapWhatsAppScript(result.rows[0]);
+}
+
+async function deleteWhatsAppScript(tenantId, scriptId, employeeId) {
+  const result = await pool.query(
+    `DELETE FROM whatsapp_scripts WHERE id = $1 AND tenant_id = $2 AND employee_id = $3 RETURNING id`,
+    [scriptId, tenantId, employeeId],
+  );
+  return result.rows[0]?.id ?? null;
+}
+
 module.exports = {
   DEFAULT_TENANT_ID,
   ping,
@@ -1533,6 +1735,8 @@ module.exports = {
   findLeadByPhone,
   listLeads,
   listAllLeads,
+  findLeadsByIds,
+  listAssignedNewLeadsForPipeline,
   updateLead,
   softDeleteLead,
   touchLeadActivity,
@@ -1565,6 +1769,7 @@ module.exports = {
   listNotes,
   insertCall,
   listCalls,
+  listCallsForLead,
   findCallByCallyzerId,
   upsertCallyzerCall,
   insertTask,
@@ -1580,7 +1785,10 @@ module.exports = {
   findMeetingById,
   updateMeeting,
   listMeetings,
+  listTenantMeetings,
+  listTenantCalls,
   insertFileAsset,
+  listTeamAssets,
   insertCashCollection,
   listCashCollectionsByLead,
   listCashCollectionsByEmployee,
@@ -1590,4 +1798,9 @@ module.exports = {
   getAdminKpis,
   getPipelineGrouped,
   getLeaderboard,
+  listWhatsAppScripts,
+  findWhatsAppScriptById,
+  insertWhatsAppScript,
+  updateWhatsAppScript,
+  deleteWhatsAppScript,
 };
