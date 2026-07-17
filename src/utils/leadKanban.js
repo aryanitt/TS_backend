@@ -220,11 +220,13 @@ function resolveEarlyFunnelColumn(lead, periodCalls = [], options = {}) {
     outboundOnly: options.outboundOnly ?? true,
     scopeByAssignee: options.scopeByAssignee ?? false,
   };
-  const leadCalls = getLeadOutboundCalls(lead, periodCalls, contactOpts);
-  const opts = { outboundOnly: contactOpts.outboundOnly };
+  const allCalls = getCallsForLead(lead, periodCalls, {
+    scopeByAssignee: contactOpts.scopeByAssignee,
+  });
+  const outboundCalls = getLeadOutboundCalls(lead, periodCalls, contactOpts);
 
-  if (leadHasConversation2MinPlus(leadCalls, opts)) return "conversation_2min";
-  if (leadHasNotPickCall(leadCalls, opts)) return "not_pick";
+  if (leadHasConversation2MinPlus(allCalls, { outboundOnly: false })) return "conversation_2min";
+  if (leadHasNotPickCall(outboundCalls, { outboundOnly: true })) return "not_pick";
   if (isUncontactedNewLead(lead, periodCalls, {
     ...contactOpts,
     sinceAssignment: options.sinceAssignment ?? false,
@@ -233,11 +235,11 @@ function resolveEarlyFunnelColumn(lead, periodCalls = [], options = {}) {
 }
 
 function callKanbanColumn(call) {
-  if (!isOutboundCall(call)) return null;
   const sec = Number.isFinite(call?.durationSec)
     ? call.durationSec
     : parseCallDurationSeconds(call?.duration);
   if (isConversationCall(sec)) return "conversation_2min";
+  if (!isOutboundCall(call)) return null;
   if (isNotPickupByClientCall(call)) return "not_pick";
   return null;
 }
@@ -407,6 +409,9 @@ function groupKanbanSyncedWithCallyzer(allLeads = [], periodCalls = [], meetings
   const { leadIndex, outboundLeadIds } = kanbanIndex;
   const scopeCallsByAssignee = options.scopeCallsByAssignee ?? false;
 
+  const getLeadCalls = (lead) => getCallsForLead(lead, periodCalls, {
+    scopeByAssignee: scopeCallsByAssignee,
+  });
   const getOutboundCalls = (lead) => getLeadOutboundCalls(lead, periodCalls, {
     outboundOnly: true,
     scopeByAssignee: scopeCallsByAssignee,
@@ -440,23 +445,30 @@ function groupKanbanSyncedWithCallyzer(allLeads = [], periodCalls = [], meetings
 
   const leadsToEvaluate = new Set();
   for (const lead of scopedVisible) {
-    if (getOutboundCalls(lead).length > 0) leadsToEvaluate.add(String(lead.id));
+    if (getLeadCalls(lead).length > 0) leadsToEvaluate.add(String(lead.id));
   }
   for (const leadId of outboundLeadIds) leadsToEvaluate.add(leadId);
+  for (const call of periodCalls) {
+    const sec = Number.isFinite(call.durationSec)
+      ? call.durationSec
+      : parseCallDurationSeconds(call.duration);
+    if (!isConversationCall(sec)) continue;
+    const lead = resolveLeadForCallFromIndex(call, leadIndex, allLeads);
+    if (lead?.id) leadsToEvaluate.add(String(lead.id));
+  }
 
   for (const leadId of leadsToEvaluate) {
     const lead = leadIndex.byId.get(leadId);
     if (!lead || !showLead(lead)) continue;
-    const leadCalls = getOutboundCalls(lead);
-    const opts = { outboundOnly: true };
+    const leadCalls = getLeadCalls(lead);
+    const outboundCalls = getOutboundCalls(lead);
     let col = null;
-    if (leadHasConversation2MinPlus(leadCalls, opts)) col = "conversation_2min";
-    else if (leadHasNotPickCall(leadCalls, opts)) col = "not_pick";
+    if (leadHasConversation2MinPlus(leadCalls, { outboundOnly: false })) col = "conversation_2min";
+    else if (leadHasNotPickCall(outboundCalls, { outboundOnly: true })) col = "not_pick";
     if (col && col !== "lead") pushLead(col, lead);
   }
 
   for (const call of periodCalls) {
-    if (!isOutboundCall(call)) continue;
     const col = callKanbanColumn(call);
     if (!col) continue;
     if (resolveLeadForCallFromIndex(call, leadIndex, allLeads)) continue;
