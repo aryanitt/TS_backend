@@ -1,7 +1,7 @@
 const { logger } = require("../config/logger");
 const pool = require("../../config/db");
 const { CALL_CONVERSATION_MIN_SEC } = require("../utils/callMetrics");
-const { parseCallyzerCallInstant } = require("../utils/appTimezone");
+const { formatUtcInstantAsAppSql, parseCallyzerCallInstant } = require("../utils/appTimezone");
 
 const BASE_URL = (process.env.CALLYZER_API_BASE_URL || "https://api1.callyzer.co/api/v2.1").replace(/\/$/, "");
 const MIN_INTERVAL_MS = 2100;
@@ -141,10 +141,11 @@ function parseCallyzerTimestamp(callDate, callTime) {
 }
 
 function mapLogToCall(log, employeeId, leadId) {
-  const startedAt = parseCallyzerTimestamp(log.call_date, log.call_time);
+  const startedAtUtc = parseCallyzerTimestamp(log.call_date, log.call_time);
   const durationSec = Number(log.duration) || 0;
-  const endedAt = startedAt && durationSec
-    ? new Date(new Date(startedAt).getTime() + durationSec * 1000).toISOString()
+  const startedAt = startedAtUtc ? formatUtcInstantAsAppSql(startedAtUtc) : null;
+  const endedAt = startedAtUtc && durationSec
+    ? formatUtcInstantAsAppSql(new Date(new Date(startedAtUtc).getTime() + durationSec * 1000))
     : startedAt;
 
   return {

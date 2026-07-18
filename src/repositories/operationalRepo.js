@@ -1327,17 +1327,19 @@ async function updateMeeting(tenantId, meetingId, patch) {
   return mapMeeting(result.rows[0]);
 }
 
-async function listMeetings(tenantId, employeeId) {
+async function listMeetings(tenantId, employeeId, options = {}) {
+  const limit = Math.min(Math.max(Number(options.limit) || 1000, 1), 2000);
   const result = await pool.query(
-    `SELECT * FROM meetings WHERE tenant_id = $1 AND employee_id = $2 ORDER BY scheduled_at ASC`,
+    `SELECT * FROM meetings WHERE tenant_id = $1 AND employee_id = $2 ORDER BY scheduled_at ASC LIMIT ${limit}`,
     [tenantId, employeeId],
   );
   return result.rows.map(mapMeeting);
 }
 
-async function listTenantMeetings(tenantId) {
+async function listTenantMeetings(tenantId, options = {}) {
+  const limit = Math.min(Math.max(Number(options.limit) || 1000, 1), 2000);
   const result = await pool.query(
-    `SELECT * FROM meetings WHERE tenant_id = $1 ORDER BY scheduled_at ASC`,
+    `SELECT * FROM meetings WHERE tenant_id = $1 ORDER BY scheduled_at ASC LIMIT ${limit}`,
     [tenantId],
   );
   return result.rows.map(mapMeeting);

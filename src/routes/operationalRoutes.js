@@ -648,8 +648,10 @@ router.get("/pipeline/board", asyncRoute(async (req, res) => {
   if (req.query.sync === "1" && callyzer.isConfigured()) {
     const employees = await repo.listActiveEmployees(tenantId);
     const syncDays = Number(process.env.CALLYZER_HISTORY_DAYS || 30);
-    await Promise.all(
-      employees.map(async (employee) => {
+    const batchSize = 2;
+    for (let i = 0; i < employees.length; i += batchSize) {
+      const batch = employees.slice(i, i + batchSize);
+      await Promise.all(batch.map(async (employee) => {
         const dbCalls = await repo.listCalls(tenantId, employee.id, { limit: 500 });
         await callyzer.syncEmployeeCallsIfStale(tenantId, employee, {
           dbCalls,
@@ -657,8 +659,8 @@ router.get("/pipeline/board", asyncRoute(async (req, res) => {
           days: syncDays,
           force: true,
         });
-      }),
-    );
+      }));
+    }
   }
 
   const payload = await buildPipelineBoardPayload(tenantId, {

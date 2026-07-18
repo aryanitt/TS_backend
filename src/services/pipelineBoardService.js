@@ -124,8 +124,8 @@ async function buildPipelineBoardPayload(tenantId, {
       ? repo.listCalls(tenantId, employeeId, { period: callPeriod, limit: callLimit })
       : repo.listTenantCalls(tenantId, { period: callPeriod, limit: callLimit }),
     employeeId != null
-      ? repo.listMeetings(tenantId, employeeId)
-      : repo.listTenantMeetings(tenantId),
+      ? repo.listMeetings(tenantId, employeeId, { limit: 1000 })
+      : repo.listTenantMeetings(tenantId, { limit: 1000 }),
     useFullAttach ? Promise.resolve([]) : repo.listAssignedNewLeadsForPipeline(tenantId, employeeId),
   ]);
 
