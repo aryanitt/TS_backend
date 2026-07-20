@@ -14,6 +14,7 @@ const teamRoutes = require("./routes/teamRoutes");
 const settingsRoutes = require("./routes/settingsRoutes");
 const activityRoutes = require("./routes/activityRoutes");
 const operationalRoutes = require("./routes/operationalRoutes");
+const googleRoutes = require("./routes/googleRoutes");
 const servicesRoutes = require("./routes/servicesRoutes");
 const formsRoutes = require("./routes/formsRoutes");
 const aiRoutes = require("./routes/aiRoutes");
@@ -90,6 +91,7 @@ app.use("/api/activity", activityRoutes);
 app.use("/api/services", servicesRoutes);
 app.use("/api/forms", formsRoutes);
 app.use("/api/ai", aiRoutes);
+app.use("/api/v1", googleRoutes);
 app.use("/api/v1", operationalRoutes);
 mountSwagger(app);
 
