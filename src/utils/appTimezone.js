@@ -23,6 +23,25 @@ function formatUtcInstantAsAppSql(value) {
   return `${shifted.getUTCFullYear()}-${pad2(shifted.getUTCMonth() + 1)}-${pad2(shifted.getUTCDate())}T${pad2(shifted.getUTCHours())}:${pad2(shifted.getUTCMinutes())}:${pad2(shifted.getUTCSeconds())}`;
 }
 
+const NAIVE_SQL_DATETIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/;
+
+/** MySQL DATETIME on UTC hosts stores UTC wall clock with no tz marker. */
+function parseNaiveDbDateTimeAsUtcInstant(value) {
+  const iso = String(value || "").trim().replace(" ", "T");
+  if (!NAIVE_SQL_DATETIME.test(iso)) return null;
+  const d = new Date(`${iso}Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Recover true UTC instant from mysql2 Date (IST session mis-reads UTC literals as IST).
+ * Safe while started_at values are UTC wall-clock literals from ISO inserts.
+ */
+function mysqlDatetimeToUtcInstant(val) {
+  if (!(val instanceof Date) || Number.isNaN(val.getTime())) return null;
+  return new Date(val.getTime() + parseOffsetMinutes() * 60 * 1000);
+}
+
 /** Normalize DB/API datetimes to IST wall-clock strings (no Z suffix). */
 function toLocalSqlString(val) {
   if (val == null || val === "") return null;
@@ -32,10 +51,13 @@ function toLocalSqlString(val) {
     if (s.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(s)) {
       return formatUtcInstantAsAppSql(new Date(s)) || s;
     }
+    const utcInstant = parseNaiveDbDateTimeAsUtcInstant(s);
+    if (utcInstant) return formatUtcInstantAsAppSql(utcInstant) || s.replace(" ", "T");
     return s.replace(" ", "T");
   }
   if (val instanceof Date) {
-    return formatUtcInstantAsAppSql(val);
+    const utcInstant = mysqlDatetimeToUtcInstant(val);
+    return formatUtcInstantAsAppSql(utcInstant || val);
   }
   return val;
 }

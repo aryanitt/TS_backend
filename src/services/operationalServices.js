@@ -2,6 +2,7 @@ const repo = require("../repositories/operationalRepo");
 const { emitTenant, emitEmployee } = require("../realtime/socket");
 const { cacheGet, cacheSet } = require("../config/redis");
 const pool = require("../../config/db");
+const googleMeet = require("./googleMeetService");
 
 const { DEFAULT_TENANT_ID } = repo;
 
@@ -454,7 +455,26 @@ async function completeFollowup({ tenantId, followupId, actor: a }) {
 }
 
 async function createMeeting({ tenantId, data, actor: a }) {
-  const meeting = await repo.insertMeeting({ tenantId, ...data });
+  const payload = { ...data };
+  const location = String(payload.location || "").toLowerCase();
+  const isGoogleMeet = location.includes("google meet");
+  const meetLink = String(payload.meetLink || "").trim();
+
+  if (isGoogleMeet && !meetLink) {
+    if (!googleMeet.isConfigured()) {
+      const err = new Error("Google Meet is not configured on the server");
+      err.status = 503;
+      throw err;
+    }
+    payload.meetLink = await googleMeet.createMeetLink({
+      employeeId: payload.employeeId,
+      title: payload.title,
+      scheduledAt: payload.scheduledAt,
+      durationMin: payload.durationMin || 30,
+    });
+  }
+
+  const meeting = await repo.insertMeeting({ tenantId, ...payload });
   await writeTimeline({
     tenantId,
     leadId: data.leadId,
@@ -466,10 +486,10 @@ async function createMeeting({ tenantId, data, actor: a }) {
   try {
     await notify({
       tenantId,
-      employeeId: data.employeeId,
+      employeeId: payload.employeeId,
       type: "meeting_scheduled",
       title: "Meeting scheduled",
-      body: data.title,
+      body: payload.title,
       entityType: "meeting",
       entityId: meeting.id,
     });
