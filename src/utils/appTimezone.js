@@ -51,8 +51,10 @@ function toLocalSqlString(val) {
     if (s.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(s)) {
       return formatUtcInstantAsAppSql(new Date(s)) || s;
     }
-    const utcInstant = parseNaiveDbDateTimeAsUtcInstant(s);
-    if (utcInstant) return formatUtcInstantAsAppSql(utcInstant) || s.replace(" ", "T");
+    // Naive SQL datetimes are already IST wall clock (Callyzer sync + CRM inserts).
+    if (NAIVE_SQL_DATETIME.test(s)) {
+      return s.replace(" ", "T");
+    }
     return s.replace(" ", "T");
   }
   if (val instanceof Date) {
