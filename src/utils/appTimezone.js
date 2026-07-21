@@ -34,8 +34,8 @@ function parseNaiveDbDateTimeAsUtcInstant(value) {
 }
 
 /**
- * Recover true UTC instant from mysql2 Date (IST session mis-reads UTC literals as IST).
- * Safe while started_at values are UTC wall-clock literals from ISO inserts.
+ * Legacy helper — only if mysql2 returns Dates without pool timezone config.
+ * With db pool `timezone: +05:30`, Date values are already correct instants.
  */
 function mysqlDatetimeToUtcInstant(val) {
   if (!(val instanceof Date) || Number.isNaN(val.getTime())) return null;
@@ -58,8 +58,9 @@ function toLocalSqlString(val) {
     return s.replace(" ", "T");
   }
   if (val instanceof Date) {
-    const utcInstant = mysqlDatetimeToUtcInstant(val);
-    return formatUtcInstantAsAppSql(utcInstant || val);
+    if (Number.isNaN(val.getTime())) return null;
+    // mysql2 pool uses APP_TZ_OFFSET — do not add offset again.
+    return formatUtcInstantAsAppSql(val);
   }
   return val;
 }
