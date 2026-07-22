@@ -2,6 +2,7 @@ const {
   isConversationCall,
   isNotPickupByClientCall,
   isOutboundCall,
+  isShortConnectedCall,
   phonesMatchLoose,
   parseCallDurationSeconds,
 } = require("./callMetrics");
@@ -215,6 +216,13 @@ function leadHasNotPickCall(calls = [], { outboundOnly = false } = {}) {
   });
 }
 
+function leadHasShortCall(calls = [], { outboundOnly = false } = {}) {
+  return calls.some((c) => {
+    if (outboundOnly && !isOutboundCall(c)) return false;
+    return isShortConnectedCall(c);
+  });
+}
+
 function resolveEarlyFunnelColumn(lead, periodCalls = [], options = {}) {
   const contactOpts = {
     outboundOnly: options.outboundOnly ?? true,
@@ -226,6 +234,7 @@ function resolveEarlyFunnelColumn(lead, periodCalls = [], options = {}) {
   const outboundCalls = getLeadOutboundCalls(lead, periodCalls, contactOpts);
 
   if (leadHasConversation2MinPlus(allCalls, { outboundOnly: false })) return "conversation_2min";
+  if (leadHasShortCall(outboundCalls, { outboundOnly: true })) return "short_call";
   if (leadHasNotPickCall(outboundCalls, { outboundOnly: true })) return "not_pick";
   if (isUncontactedNewLead(lead, periodCalls, {
     ...contactOpts,
@@ -241,6 +250,7 @@ function callKanbanColumn(call) {
   if (isConversationCall(sec)) return "conversation_2min";
   if (!isOutboundCall(call)) return null;
   if (isNotPickupByClientCall(call)) return "not_pick";
+  if (isShortConnectedCall(call)) return "short_call";
   return null;
 }
 
@@ -386,8 +396,20 @@ function leadFromOrphanCall(call, col = "lead") {
     name,
     company: call.company || call.clientCompany || "Callyzer Call",
     phone,
-    stage: col === "conversation_2min" ? "Conversation" : col === "not_pick" ? "Not Pick" : "Lead",
-    status: col === "conversation_2min" ? "contacted" : col === "not_pick" ? "notpick" : "new",
+    stage: col === "conversation_2min"
+      ? "Conversation"
+      : col === "short_call"
+        ? "Short Call"
+        : col === "not_pick"
+          ? "Not Pick"
+          : "Lead",
+    status: col === "conversation_2min"
+      ? "contacted"
+      : col === "short_call"
+        ? "contacted"
+        : col === "not_pick"
+          ? "notpick"
+          : "new",
     budget: "—",
     callAt,
     startedAt: callAt,
@@ -460,10 +482,8 @@ function groupKanbanSyncedWithCallyzer(allLeads = [], periodCalls = [], meetings
   }
   for (const leadId of outboundLeadIds) leadsToEvaluate.add(leadId);
   for (const call of periodCalls) {
-    const sec = Number.isFinite(call.durationSec)
-      ? call.durationSec
-      : parseCallDurationSeconds(call.duration);
-    if (!isConversationCall(sec)) continue;
+    const col = callKanbanColumn(call);
+    if (!col) continue;
     const lead = resolveLeadForCallFromIndex(call, leadIndex, allLeads);
     if (lead?.id) leadsToEvaluate.add(String(lead.id));
   }
@@ -475,6 +495,7 @@ function groupKanbanSyncedWithCallyzer(allLeads = [], periodCalls = [], meetings
     const outboundCalls = getOutboundCalls(lead);
     let col = null;
     if (leadHasConversation2MinPlus(leadCalls, { outboundOnly: false })) col = "conversation_2min";
+    else if (leadHasShortCall(outboundCalls, { outboundOnly: true })) col = "short_call";
     else if (leadHasNotPickCall(outboundCalls, { outboundOnly: true })) col = "not_pick";
     if (col && col !== "lead") pushLead(col, lead);
   }
@@ -531,7 +552,7 @@ function groupEmpLeadsKanban(leads, calls = [], options = {}) {
 }
 
 const OPP_STAGE_BUCKETS = {
-  not_contacted: ["not_pick"],
+  not_contacted: ["not_pick", "short_call"],
   no_meeting: ["conversation_2min"],
   stuck_pipeline: ["meeting_booked", "meeting_done", "proposal_sent", "objection"],
 };
@@ -540,6 +561,7 @@ const OPP_STAGE_BUCKETS = {
 const KANBAN_TO_FUNNEL_COL = {
   lead: "Contacted",
   not_pick: "Contacted",
+  short_call: "Contacted",
   conversation_2min: "Contacted",
   meeting_booked: "Qualified",
   meeting_done: "Qualified",

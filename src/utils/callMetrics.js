@@ -1,6 +1,7 @@
 /** Minimum connected call duration (seconds) counted as a conversation for KRA/incentives. */
 const CALL_CONVERSATION_MIN_SEC = 120;
 const CALL_CONVERSATION_LABEL = "2 min+";
+const CALL_SHORT_LABEL = "< 2 min";
 
 function parseCallDurationSeconds(durationStr) {
   if (durationStr == null || durationStr === "—") return 0;
@@ -53,6 +54,15 @@ function isOutboundCall(call = {}) {
   return type === "out" || type === "outbound" || type === "outgoing" || type === "miss";
 }
 
+function isShortConnectedCall(call = {}) {
+  const durationSec = Number.isFinite(call.durationSec)
+    ? call.durationSec
+    : parseCallDurationSeconds(call.duration);
+  if (durationSec <= 0 || durationSec >= CALL_CONVERSATION_MIN_SEC) return false;
+  if (!isOutboundCall(call)) return false;
+  return !isNotPickupByClientCall(call);
+}
+
 function isNotPickupByClientCall(call = {}) {
   const durationSec = Number.isFinite(call.durationSec)
     ? call.durationSec
@@ -98,10 +108,12 @@ function dedupePeriodCalls(calls = []) {
 module.exports = {
   CALL_CONVERSATION_MIN_SEC,
   CALL_CONVERSATION_LABEL,
+  CALL_SHORT_LABEL,
   parseCallDurationSeconds,
   isConversationCall,
   phonesMatchLoose,
   isOutboundCall,
+  isShortConnectedCall,
   isNotPickupByClientCall,
   isMissedCall,
   dedupePeriodCalls,

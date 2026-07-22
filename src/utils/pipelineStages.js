@@ -2,6 +2,7 @@
 const PIPELINE_STAGE_DEFINITIONS = [
   { id: "lead", label: "Lead" },
   { id: "not_pick", label: "Not Pick" },
+  { id: "short_call", label: "Short Call" },
   { id: "conversation_2min", label: "Conversation 2 min+" },
   { id: "meeting_booked", label: "Meeting Booked" },
   { id: "meeting_done", label: "Meeting Done" },
@@ -74,11 +75,18 @@ function mapStageToId(stage, status = "") {
     || normalized.includes("follow up")
     || normalized.includes("follow-up")
     || normalized === "conversation"
-    || s.includes("attempted")
     || s.includes("contacted")
     || s.includes("qualified")
   ) {
     return "conversation_2min";
+  }
+  if (
+    s === "short_call"
+    || normalized.includes("short call")
+    || (normalized.includes("connected") && normalized.includes("2 min"))
+    || s.includes("attempted")
+  ) {
+    return "short_call";
   }
   if (normalized.includes("not pick") || st === "notpick" || st.includes("not pick")) {
     return "not_pick";
