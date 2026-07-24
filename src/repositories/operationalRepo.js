@@ -1129,7 +1129,33 @@ async function upsertCallyzerCall(data) {
   const existing = data.callyzerCallId
     ? await findCallByCallyzerId(data.tenantId, data.callyzerCallId)
     : null;
-  if (existing) return existing;
+
+  if (existing) {
+    // If the call now has a recording that it didn't before, update it
+    // and clear the AI summary so it gets re-processed with real audio
+    const hasNewRecording = data.recordingUrl && !existing.recordingUrl;
+    const hadPlaceholderSummary =
+      !existing.aiSummary ||
+      existing.aiSummary === "" ||
+      String(existing.aiSummary).includes("No call recording") ||
+      String(existing.notes || "").includes("No call recording");
+
+    if (hasNewRecording || (data.recordingUrl && hadPlaceholderSummary)) {
+      await pool.query(
+        `UPDATE employee_calls
+         SET recording_url = $1, ai_summary = NULL, notes = NULL, transcript = NULL
+         WHERE id = $2`,
+        [data.recordingUrl, existing.id],
+      );
+      // Return the updated record so AI processing gets triggered
+      const updated = await pool.query(
+        "SELECT * FROM employee_calls WHERE id = $1 LIMIT 1",
+        [existing.id],
+      );
+      return mapCall(updated.rows[0]);
+    }
+    return existing;
+  }
 
   const result = await pool.query(
     `INSERT INTO employee_calls (
@@ -1153,6 +1179,7 @@ async function upsertCallyzerCall(data) {
   );
   return mapCall(result.rows[0]);
 }
+
 
 async function insertTask(data) {
   const result = await pool.query(

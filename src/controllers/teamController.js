@@ -1,6 +1,13 @@
 const pool = require("../../config/db");
 const { CALL_CONVERSATION_MIN_SEC } = require("../utils/callMetrics");
-const { buildPeriodDateFilter } = require("../utils/periodFilter");
+const {
+  buildPeriodDateFilter,
+  buildCustomDateFilter,
+  buildPreviousPeriodDateFilter,
+  rangeQueryToPeriod,
+  comparisonLabelForPeriod,
+} = require("../utils/periodFilter");
+const { queryTeamServiceMetrics } = require("../utils/teamKpiMetrics");
 const {
   mapCallStatsRow,
   CALL_STATS_AGG_SQL,
@@ -653,52 +660,89 @@ const resetEmployeeCredentials = async (req, res) => {
 
 const getTeamKPIs = async (req, res) => {
   try {
+    const tenantId = "default";
     const { range, startDate, endDate } = req.query;
+    const period = rangeQueryToPeriod(range);
+    const callColumn = "COALESCE(started_at, created_at)";
+    const leadColumn = "COALESCE(assigned_at, created_at)";
 
-    // Build date filter
-    let dateFilter = "";
-    let params     = [];
+    let leadCurrentFilter;
+    let leadPreviousFilter;
 
-    if (range === "Today") {
-      dateFilter = `AND DATE(submitted_time) = CURDATE()`;
-    } else if (range === "This Week") {
-      dateFilter = `AND submitted_time >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
-                    AND submitted_time < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY), INTERVAL 7 DAY)`;
-    } else if (range === "Custom" && startDate && endDate) {
-      dateFilter = `AND DATE(submitted_time) >= $1 AND DATE(submitted_time) <= $2`;
-      params     = [startDate, endDate];
+    if (period === "custom" && startDate && endDate) {
+      leadCurrentFilter = buildCustomDateFilter({
+        startDate,
+        endDate,
+        column: leadColumn,
+        paramOffset: 2,
+      });
+      leadPreviousFilter = buildPreviousPeriodDateFilter({
+        period: "custom",
+        startDate,
+        endDate,
+        column: leadColumn,
+        paramOffset: 2,
+      });
     } else {
-      dateFilter = `AND submitted_time >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
-                    AND submitted_time < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)`;
+      leadCurrentFilter = buildPeriodDateFilter({
+        period,
+        column: leadColumn,
+        paramOffset: 2,
+      });
+      leadPreviousFilter = buildPreviousPeriodDateFilter({
+        period: leadCurrentFilter.period,
+        column: leadColumn,
+        paramOffset: 2,
+      });
     }
 
-    const empResult = await pool.query(
-      `SELECT COUNT(*) AS total_employees FROM employees`
-    );
+    const callCurrentFilter = period === "custom" && startDate && endDate
+      ? buildCustomDateFilter({ startDate, endDate, column: callColumn, paramOffset: 2 })
+      : buildPeriodDateFilter({ period, column: callColumn, paramOffset: 2 });
+    const callPreviousFilter = period === "custom" && startDate && endDate
+      ? buildPreviousPeriodDateFilter({ period: "custom", startDate, endDate, column: callColumn, paramOffset: 2 })
+      : buildPreviousPeriodDateFilter({ period: callCurrentFilter.period, column: callColumn, paramOffset: 2 });
 
-    const leadsResult = await pool.query(
-      `SELECT
-        COUNT(*) AS total_leads,
-        SUM(CASE WHEN LOWER(TRIM(status)) LIKE '%meeting%' THEN 1 ELSE 0 END) AS total_meetings,
-        SUM(CASE WHEN LOWER(TRIM(status)) = 'converted' THEN 1 ELSE 0 END) AS total_converted
-       FROM emp_leads
-       WHERE 1=1 ${dateFilter}`,
-      params
-    );
+    const [empResult, leadsResult, serviceMetrics] = await Promise.all([
+      pool.query(`SELECT COUNT(*) AS total_employees FROM employees WHERE tenant_id = $1`, [tenantId]),
+      pool.query(
+        `SELECT
+          COUNT(*) AS total_leads,
+          SUM(CASE WHEN LOWER(TRIM(COALESCE(pipeline_stage, status))) LIKE '%meeting%' THEN 1 ELSE 0 END) AS total_meetings,
+          SUM(CASE WHEN LOWER(TRIM(COALESCE(pipeline_stage, status))) IN ('converted', 'closed won', 'won') THEN 1 ELSE 0 END) AS total_converted
+         FROM leads
+         WHERE tenant_id = $1 AND is_deleted = 0 AND ${leadCurrentFilter.clause}`,
+        [tenantId, ...leadCurrentFilter.params],
+      ),
+      queryTeamServiceMetrics(
+        pool,
+        tenantId,
+        callCurrentFilter,
+        callPreviousFilter,
+        leadCurrentFilter,
+        leadPreviousFilter,
+      ),
+    ]);
 
-    const empRow   = empResult.rows[0];
+
+    const empRow = empResult.rows[0];
     const leadsRow = leadsResult.rows[0];
+    const { current, trends } = serviceMetrics;
 
     res.json({
       success: true,
       kpis: {
-        totalEmployees: parseInt(empRow.total_employees),
-        totalMeetings:  parseInt(leadsRow.total_meetings)  || 0,
-        convertedLeads: parseInt(leadsRow.total_converted) || 0,
-        totalLeads:     parseInt(leadsRow.total_leads)     || 0,
+        totalEmployees: parseInt(empRow.total_employees, 10) || 0,
+        totalMeetings: parseInt(leadsRow.total_meetings, 10) || 0,
+        convertedLeads: parseInt(leadsRow.total_converted, 10) || 0,
+        totalLeads: parseInt(leadsRow.total_leads, 10) || 0,
+        ...current,
+        trends,
+        comparisonLabel: comparisonLabelForPeriod(period === "custom" ? "custom" : leadCurrentFilter.period),
+        period: leadCurrentFilter.period,
+        periodLabel: leadCurrentFilter.label,
       },
     });
-
   } catch (error) {
     console.error("Error fetching KPIs:", error);
     res.status(500).json({
@@ -708,6 +752,28 @@ const getTeamKPIs = async (req, res) => {
     });
   }
 };
+
+function buildLegacyEmpLeadsDateFilter(range, startDate, endDate) {
+  if (range === "Today") {
+    return "AND DATE(submitted_time) = CURDATE()";
+  }
+  if (range === "This Week") {
+    return `AND submitted_time >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+            AND submitted_time < DATE_ADD(DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY), INTERVAL 7 DAY)`;
+  }
+  if (range === "Custom" && startDate && endDate) {
+    return "AND DATE(submitted_time) >= $1 AND DATE(submitted_time) <= $2";
+  }
+  return `AND submitted_time >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+          AND submitted_time < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)`;
+}
+
+function buildLegacyEmpLeadsParams(range, startDate, endDate) {
+  if (range === "Custom" && startDate && endDate) {
+    return [startDate, endDate];
+  }
+  return [];
+}
 
 const getChartData = async (req, res) => {
   try {

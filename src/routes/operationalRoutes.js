@@ -556,23 +556,36 @@ router.post("/employee/calls", validate(callSchema), requireEmployeeSelfBody("em
     return res.status(400).json({ success: false, message: `Employee ${req.body.employeeId} not found` });
   }
   const call = await recordCall({ tenantId, data: req.body, actor: actor(req) });
+  // Fire AI MoM generation immediately in background for every new call
+  if (call?.id) {
+    const { processCallWithAi } = require("../services/aiService");
+    processCallWithAi(tenantId, call.id).catch((err) => {
+      logger.warn("Auto AI processing failed for manual call", { callId: call.id, error: err.message });
+    });
+  }
   return ok(res, call);
 }));
 
 router.put("/employee/calls/:id", asyncRoute(async (req, res) => {
   const tenantId = tenant(req);
   const callId = req.params.id;
-  const { leadId } = req.body;
-  if (!leadId) {
-    return res.status(400).json({ success: false, message: "leadId is required" });
+  const { leadId, notes, aiSummary, rating } = req.body;
+  
+  if (leadId) {
+    const lead = await repo.findLeadById(tenantId, leadId);
+    if (!lead) {
+      return res.status(400).json({ success: false, message: "Lead not found" });
+    }
   }
-  const lead = await repo.findLeadById(tenantId, leadId);
-  if (!lead) {
-    return res.status(400).json({ success: false, message: "Lead not found" });
-  }
+
   await pool.query(
-    "UPDATE employee_calls SET lead_id = $1 WHERE tenant_id = $2 AND id = $3",
-    [leadId, tenantId, callId]
+    `UPDATE employee_calls 
+     SET lead_id = COALESCE($1, lead_id),
+         notes = COALESCE($2, notes),
+         ai_summary = COALESCE($3, ai_summary),
+         rating = COALESCE($4, rating)
+     WHERE tenant_id = $5 AND id = $6`,
+    [leadId || null, notes || null, aiSummary || null, rating !== undefined ? rating : null, tenantId, callId]
   );
   return ok(res, { success: true });
 }));
@@ -1030,7 +1043,7 @@ router.post("/webhooks/callyzer", asyncRoute(async (req, res) => {
       const leadId = lead?.id || callyzer.resolveLeadIdForLog(log, assignedLeads, phoneIndex);
       const mapped = callyzer.mapLogToCall(log, employee.id, leadId);
       try {
-        await repo.upsertCallyzerCall({
+      const savedCall = await repo.upsertCallyzerCall({
           tenantId,
           leadId: mapped.leadId,
           employeeId: employee.id,
@@ -1044,6 +1057,13 @@ router.post("/webhooks/callyzer", asyncRoute(async (req, res) => {
           notes: mapped.notes,
           aiSummary: mapped.aiSummary,
         });
+        // Fire AI MoM immediately for every call (real MoM if recording, "No recording" if not)
+        if (savedCall?.id) {
+          const { processCallWithAi } = require("../services/aiService");
+          processCallWithAi(tenantId, savedCall.id).catch((err) => {
+            logger.warn("Auto AI processing failed for webhook call", { callId: savedCall.id, error: err.message });
+          });
+        }
         synced += 1;
       } catch {
         skipped += 1;

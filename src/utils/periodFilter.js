@@ -66,4 +66,109 @@ function buildPeriodDateFilter({
   };
 }
 
-module.exports = { buildPeriodDateFilter, resolveMonth, APP_TZ_OFFSET, sqlTodayDate };
+/** Map Team page / API range query to internal period key. */
+function rangeQueryToPeriod(range) {
+  const r = String(range || "").trim().toLowerCase();
+  if (r === "today" || r === "day") return "day";
+  if (r === "this week" || r === "this_week" || r === "week") return "week";
+  if (r === "custom") return "custom";
+  return "month";
+}
+
+
+/** Comparison sub-label for KPI trend rows. */
+function comparisonLabelForPeriod(period) {
+  const p = String(period || "month").toLowerCase();
+  if (p === "day" || p === "today") return "vs yesterday";
+  if (p === "week" || p === "this_week") return "vs last week";
+  if (p === "custom") return "vs prior period";
+  return "vs last month";
+}
+
+function buildCustomDateFilter({
+  startDate,
+  endDate,
+  column = "created_at",
+  paramOffset = 2,
+} = {}) {
+  return {
+    clause: `DATE(${column}) >= $${paramOffset} AND DATE(${column}) <= $${paramOffset + 1}`,
+    params: [startDate, endDate],
+    label: `${startDate} – ${endDate}`,
+    period: "custom",
+  };
+}
+
+/** Previous period of equal length (day / week / month / custom). */
+function buildPreviousPeriodDateFilter({
+  period = "month",
+  month = null,
+  column = "created_at",
+  startDate = null,
+  endDate = null,
+  paramOffset = 2,
+} = {}) {
+  const p = String(period || "month").toLowerCase();
+  const resolvedMonth = resolveMonth(month);
+  const today = sqlTodayDate();
+  const colDate = `DATE(${column})`;
+
+  if (p === "day" || p === "today") {
+    const yesterday = `DATE_SUB(${today}, INTERVAL 1 DAY)`;
+    return {
+      clause: `${colDate} = ${yesterday}`,
+      params: [],
+      label: "Yesterday",
+      period: "day",
+    };
+  }
+
+  if (p === "week" || p === "this_week") {
+    const weekStart = `DATE_SUB(${today}, INTERVAL WEEKDAY(${today}) DAY)`;
+    const prevWeekStart = `DATE_SUB(${weekStart}, INTERVAL 7 DAY)`;
+    const prevWeekEnd = `DATE_SUB(${weekStart}, INTERVAL 1 DAY)`;
+    return {
+      clause: `${colDate} >= ${prevWeekStart} AND ${colDate} <= ${prevWeekEnd}`,
+      params: [],
+      label: "Last week",
+      period: "week",
+    };
+  }
+
+  if (p === "custom" && startDate && endDate) {
+    return {
+      clause: `${colDate} >= DATE_SUB($${paramOffset}, INTERVAL DATEDIFF($${paramOffset + 1}, $${paramOffset}) + 1 DAY) AND ${colDate} <= DATE_SUB($${paramOffset}, INTERVAL 1 DAY)`,
+      params: [startDate, endDate],
+      label: "Prior period",
+      period: "custom",
+    };
+  }
+
+  if (resolvedMonth) {
+    const prevMonth = `DATE_FORMAT(DATE_SUB(STR_TO_DATE(CONCAT($${paramOffset}, '-01'), '%Y-%m-%d'), INTERVAL 1 MONTH), '%Y-%m')`;
+    return {
+      clause: `DATE_FORMAT(${column}, '%Y-%m') = ${prevMonth}`,
+      params: [resolvedMonth],
+      label: "Prior month",
+      period: "month",
+    };
+  }
+
+  return {
+    clause: `DATE_FORMAT(${column}, '%Y-%m') = DATE_FORMAT(DATE_SUB(${today}, INTERVAL 1 MONTH), '%Y-%m')`,
+    params: [],
+    label: "Last month",
+    period: "month",
+  };
+}
+
+module.exports = {
+  buildPeriodDateFilter,
+  buildCustomDateFilter,
+  buildPreviousPeriodDateFilter,
+  rangeQueryToPeriod,
+  comparisonLabelForPeriod,
+  resolveMonth,
+  APP_TZ_OFFSET,
+  sqlTodayDate,
+};
