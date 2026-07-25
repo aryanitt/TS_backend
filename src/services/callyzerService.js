@@ -183,6 +183,9 @@ function formatLeadContactNumber(phone) {
 function buildDialUrl(phone) {
   const d = digitsOnly(phone);
   if (!d) return null;
+  if (d.length === 10) return `tel:+91${d}`;
+  if (d.length === 11 && d.startsWith("0")) return `tel:+91${d.slice(1)}`;
+  if (d.length === 12 && d.startsWith("91")) return `tel:+${d}`;
   return `tel:+${d}`;
 }
 
