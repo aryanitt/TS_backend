@@ -2,6 +2,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
+const xlsx = require("xlsx");
 const repo = require("../repositories/operationalRepo");
 const { listAllSops } = require("../controllers/sopController");
 const {
@@ -150,6 +151,143 @@ function scopeEmployeeLeadList(req) {
 router.post("/leads", validate(createLeadSchema), asyncRoute(async (req, res) => {
   const result = await createLead(req.body, { tenantId: tenant(req), actor: actor(req) });
   return ok(res, result);
+}));
+
+router.post("/leads/bulk-upload", upload.single("file"), asyncRoute(async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ success: false, message: "No file uploaded" });
+  }
+
+  try {
+    const workbook = xlsx.readFile(req.file.path);
+    const sheetName = workbook.SheetNames[0];
+    if (!sheetName) {
+      return res.status(400).json({ success: false, message: "Spreadsheet has no sheets" });
+    }
+    const sheet = workbook.Sheets[sheetName];
+    const rows = xlsx.utils.sheet_to_json(sheet, { defval: "" });
+
+    // Clean up temporary uploaded file asynchronously
+    fs.unlink(req.file.path, (err) => {
+      if (err) console.error("Failed to delete temp file:", err);
+    });
+
+    const successRows = [];
+    const errorRows = [];
+
+    // Helper mapping function to normalise sheet headers
+    function mapRowToLead(row) {
+      const data = {};
+      for (const [key, val] of Object.entries(row)) {
+        const normalizedKey = String(key).trim().toLowerCase().replace(/[\s_-]+/g, "");
+        const cleanedVal = val !== undefined && val !== null ? String(val).trim() : "";
+        if (cleanedVal === "") continue; // Skip empty cells to prevent overwriting
+        
+        if (["leadname", "name", "fullname", "contactname"].includes(normalizedKey)) {
+          data.lead_name = cleanedVal;
+        } else if (["phone", "phonenumber", "mobile", "contact", "contactnumber"].includes(normalizedKey)) {
+          data.phone = cleanedVal;
+        } else if (["email", "emailaddress", "mail"].includes(normalizedKey)) {
+          data.email = cleanedVal;
+        } else if (["city"].includes(normalizedKey)) {
+          data.city = cleanedVal;
+        } else if (["company", "companyname", "businessname", "business"].includes(normalizedKey)) {
+          data.company_name = cleanedVal;
+        } else if (["source", "leadsource", "channel"].includes(normalizedKey)) {
+          data.source = cleanedVal;
+        } else if (["service", "product", "formname", "requirements"].includes(normalizedKey)) {
+          data.service = cleanedVal;
+        } else if (["expectedrevenue", "revenue", "dealvalue", "deal_value"].includes(normalizedKey)) {
+          data.expected_revenue = cleanedVal;
+        } else if (["temperature", "warmth", "status"].includes(normalizedKey)) {
+          data.temperature = cleanedVal;
+        } else if (["pipelinestage", "stage"].includes(normalizedKey)) {
+          data.pipeline_stage = cleanedVal;
+        } else if (["winprobability", "winprob"].includes(normalizedKey)) {
+          data.win_probability = cleanedVal;
+        } else if (["notes", "description", "comments"].includes(normalizedKey)) {
+          data.notes = cleanedVal;
+        } else if (["country"].includes(normalizedKey)) {
+          data.country = cleanedVal;
+        } else if (["currency"].includes(normalizedKey)) {
+          data.currency = cleanedVal;
+        } else if (["priority"].includes(normalizedKey)) {
+          data.priority = cleanedVal;
+        }
+      }
+      return data;
+    }
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      // Skip completely empty rows
+      if (Object.values(row).every(v => v === "")) continue;
+
+      const leadData = mapRowToLead(row);
+      const rowNum = i + 2; // Excel row index is 1-indexed, and row 1 is headers.
+
+      if (!leadData.lead_name) {
+        errorRows.push({ rowNum, error: "Missing 'Lead Name' column value" });
+        continue;
+      }
+
+      try {
+        const input = {
+          leadName: leadData.lead_name,
+          companyName: leadData.company_name || "",
+          phone: leadData.phone || "",
+          email: leadData.email || "",
+          city: leadData.city || "",
+          source: leadData.source || "manual",
+          formName: leadData.service || "",
+          form_name: leadData.service || "",
+          temperature: leadData.temperature || "warm",
+          pipelineStage: leadData.pipeline_stage || "new",
+          status: leadData.pipeline_stage || "New Lead",
+          winProbability: leadData.win_probability ? parseInt(leadData.win_probability) : 50,
+          expectedRevenue: leadData.expected_revenue ? parseFloat(leadData.expected_revenue) : 0,
+          requirements: leadData.service || "",
+          notes: leadData.notes || "",
+          priority: leadData.priority || "medium",
+          country: leadData.country || "India",
+          currency: leadData.currency || "INR",
+          sourceMeta: {
+            integration: "bulk_upload",
+            channel: leadData.source || "manual",
+            service: leadData.service || "",
+          }
+        };
+
+        const result = await createLead(input, { tenantId: tenant(req), actor: actor(req), autoAssign: false });
+        successRows.push({ rowNum, id: result.lead.id, name: leadData.lead_name });
+      } catch (err) {
+        errorRows.push({ rowNum, name: leadData.lead_name || `Row ${rowNum}`, error: err.message });
+      }
+    }
+
+    if (successRows.length > 0) {
+      try {
+        await processAssignmentQueue(tenant(req), { limit: successRows.length, actor: actor(req) });
+      } catch (assignErr) {
+        console.error("Bulk upload auto-assignment queue error:", assignErr);
+      }
+    }
+
+    return res.json({
+      success: true,
+      total: rows.length,
+      successCount: successRows.length,
+      errorCount: errorRows.length,
+      successes: successRows,
+      errors: errorRows,
+    });
+  } catch (err) {
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    console.error("Bulk upload error:", err);
+    return res.status(500).json({ success: false, message: "Failed to process spreadsheet file: " + err.message });
+  }
 }));
 
 router.get("/leads", asyncRoute(async (req, res) => {
