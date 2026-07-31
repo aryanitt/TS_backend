@@ -26,4 +26,21 @@ const createInsight = async (req, res) => {
   }
 };
 
-module.exports = { getInsights, generateInsights, createInsight };
+const { processCallWithAi } = require("../services/aiService");
+
+const processCallAi = async (req, res) => {
+  try {
+    const tenantId = req.user?.tenant_id || dataService.TENANT || "default";
+    const callId = req.params.callId || req.body.callId;
+    if (!callId) {
+      return res.status(400).json({ success: false, message: "callId is required" });
+    }
+    const updatedCall = await processCallWithAi(tenantId, callId);
+    res.json({ success: true, call: updatedCall });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+module.exports = { getInsights, generateInsights, createInsight, processCallAi };
+

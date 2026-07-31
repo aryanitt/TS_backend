@@ -183,6 +183,9 @@ function formatLeadContactNumber(phone) {
 function buildDialUrl(phone) {
   const d = digitsOnly(phone);
   if (!d) return null;
+  if (d.length === 10) return `tel:+91${d}`;
+  if (d.length === 11 && d.startsWith("0")) return `tel:+91${d.slice(1)}`;
+  if (d.length === 12 && d.startsWith("91")) return `tel:+${d}`;
   return `tel:+${d}`;
 }
 
@@ -636,7 +639,7 @@ async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [
         const mapped = mapLogToCall(log, employee.id, leadId);
         
         try {
-          await pool.query(
+          const insertRes = await pool.query(
             `INSERT INTO employee_calls (
                tenant_id, lead_id, employee_id, callyzer_call_id, direction, outcome,
                duration_sec, started_at, ended_at, recording_url, notes, ai_summary
@@ -656,6 +659,13 @@ async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [
               mapped.aiSummary || null,
             ]
           );
+          const newCallId = insertRes.insertId || insertRes.rows?.[0]?.id;
+          if (newCallId) {
+            const { processCallWithAi } = require("./aiService");
+            processCallWithAi(tenantId, newCallId).catch((err) => {
+              logger.warn("Auto AI call processing skipped/failed", { callId: newCallId, error: err.message });
+            });
+          }
         } catch (e) {
           logger.error("Failed to save synced call log", { callyzerCallId: mapped.callyzerCallId, message: e.message });
         }
@@ -704,6 +714,9 @@ async function getCallsForEmployee(tenantId, employee, { dbCalls = [], leads = [
         }
       }
     }
+
+    const { ensureAllCallsProcessedWithAi } = require("./aiService");
+    ensureAllCallsProcessedWithAi(tenantId).catch(() => {});
 
     const merged = [...dbCalls, ...callyzerCalls].map((c) => attachLeadToCall(c, leads, phoneIndex));
     merged.sort((a, b) => {
