@@ -21,6 +21,13 @@ function actor(req) {
 
 function normalizeLeadInput(input = {}) {
   const name = input.leadName || input.lead_name || input.name || input.contactName;
+  const rawServices = input.services || input.service || input.serviceName || "";
+  const servicesFormatted = Array.isArray(rawServices) ? rawServices.join(", ") : String(rawServices || "");
+  let notesAndReqs = input.requirements || input.notes || "";
+  if (servicesFormatted && !notesAndReqs.includes(servicesFormatted)) {
+    notesAndReqs = notesAndReqs ? `[Service: ${servicesFormatted}] ${notesAndReqs}` : `Service: ${servicesFormatted}`;
+  }
+
   return {
     leadName: name || "Unknown Lead",
     companyName: input.companyName || input.company_name || input.company || input.business_name || "",
@@ -28,7 +35,7 @@ function normalizeLeadInput(input = {}) {
     email: input.email || "",
     city: input.city || "",
     country: input.country || "India",
-    source: normalizeSource(input.source || input.channel || "manual"),
+    source: normalizeSource(input.source || input.channel || "n8n"),
     formName: input.formName || input.form_name,
     pipelineStage: input.pipelineStage || input.pipeline_stage || "new",
     temperature: normalizeTemperature(input.temperature || input.status || input.priority),
@@ -36,11 +43,13 @@ function normalizeLeadInput(input = {}) {
     winProbability: Number(input.winProbability ?? input.win_probability ?? 0),
     expectedRevenue: Number(input.expectedRevenue ?? input.expected_revenue ?? input.revenue ?? 0),
     priority: normalizePriority(input.priority),
-    requirements: input.requirements || input.notes || "",
+    requirements: notesAndReqs,
     insights: input.insights || "",
     sourceMeta: {
       ...(input.sourceMeta || input.rawPayload || {}),
       ...(input.channel ? { channel: input.channel } : {}),
+      ...(input.source ? { source: input.source } : {}),
+      ...(servicesFormatted ? { services: servicesFormatted } : {}),
     },
   };
 }
