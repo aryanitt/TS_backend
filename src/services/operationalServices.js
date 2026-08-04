@@ -359,6 +359,7 @@ async function updateLeadStage({ tenantId, leadId, stage, status, actor: a }) {
 
   const patch = {
     pipelineStage: stage,
+    stageIsManual: true,
     lastActivityAt: new Date(),
   };
   if (status) patch.status = status;
