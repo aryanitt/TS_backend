@@ -74,7 +74,7 @@ function startSchedulers() {
   const assignmentMs = Number(process.env.ASSIGNMENT_QUEUE_INTERVAL_MS || 30000);
   const reminderMs = Number(process.env.FOLLOWUP_REMINDER_INTERVAL_MS || 300000);
   const scheduleMs = Number(process.env.SCHEDULED_ASSIGNMENT_INTERVAL_MS || 60000);
-  const serviceDistMs = Number(process.env.SERVICE_DISTRIBUTION_INTERVAL_MS || 600000);
+  const serviceDistMs = Number(process.env.SERVICE_DISTRIBUTION_INTERVAL_MS || 900000);
 
   setInterval(processQueueTick, assignmentMs).unref();
   setInterval(followupReminderTick, reminderMs).unref();
