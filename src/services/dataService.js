@@ -1038,6 +1038,9 @@ async function listServices(tenantId = TENANT) {
         convRate: convRate,
         priceNum: Number(r.price_num) || 0,
         price: r.price_label || r.price || "Custom",
+        distributionEnabled: metaObj.distributionEnabled !== undefined ? Boolean(metaObj.distributionEnabled) : true,
+        distributionEmployeeIds: Array.isArray(metaObj.distributionEmployeeIds) ? metaObj.distributionEmployeeIds : [],
+        distributionEmployeeNames: Array.isArray(metaObj.distributionEmployeeNames) ? metaObj.distributionEmployeeNames : [],
         description: r.description || `Service catalog offering for ${svcName}`,
         icon: r.icon || "briefcase",
       };
@@ -1112,6 +1115,45 @@ async function updateServiceDistributionIndex(tenantId, serviceId, rrIndex) {
     [JSON.stringify(meta), tenantId, serviceId],
   );
   return meta;
+}
+
+async function updateServiceDistributionConfig(tenantId = TENANT, serviceId, { enabled, employeeIds, employeeNames }) {
+  if (!(await dbReady())) return { success: false, message: "DB not available" };
+  try {
+    let result = await pool.query(
+      `SELECT id, metadata FROM services WHERE tenant_id = $1 AND (id = $2 OR LOWER(name) = LOWER($2)) LIMIT 1`,
+      [tenantId, serviceId],
+    );
+    if (!result.rows.length) {
+      await ensureServiceExists(tenantId, serviceId);
+      result = await pool.query(
+        `SELECT id, metadata FROM services WHERE tenant_id = $1 AND (id = $2 OR LOWER(name) = LOWER($2)) LIMIT 1`,
+        [tenantId, serviceId],
+      );
+    }
+    const targetRow = result.rows[0];
+    if (!targetRow) return { success: false, message: "Service record not found" };
+
+    const meta = typeof targetRow.metadata === "string" ? JSON.parse(targetRow.metadata) : (targetRow.metadata || {});
+    if (enabled !== undefined) meta.distributionEnabled = Boolean(enabled);
+    if (employeeIds !== undefined) meta.distributionEmployeeIds = Array.isArray(employeeIds) ? employeeIds : [];
+    if (employeeNames !== undefined) meta.distributionEmployeeNames = Array.isArray(employeeNames) ? employeeNames : [];
+
+    await pool.query(
+      `UPDATE services SET metadata = $1, updated_at = NOW() WHERE tenant_id = $2 AND id = $3`,
+      [JSON.stringify(meta), tenantId, targetRow.id],
+    );
+    return {
+      success: true,
+      serviceId: targetRow.id,
+      distributionEnabled: meta.distributionEnabled,
+      distributionEmployeeIds: meta.distributionEmployeeIds,
+      distributionEmployeeNames: meta.distributionEmployeeNames,
+    };
+  } catch (err) {
+    console.error("[dataService] updateServiceDistributionConfig error:", err);
+    return { success: false, message: err.message };
+  }
 }
 
 async function listForms(tenantId = TENANT) {
@@ -1608,6 +1650,7 @@ module.exports = {
   ensureServiceExists,
   cleanServiceName,
   updateServiceDistributionIndex,
+  updateServiceDistributionConfig,
   listForms,
   createForm,
   updateForm,

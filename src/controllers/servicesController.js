@@ -15,6 +15,15 @@ const createService = async (req, res) => {
   }
 };
 
+const deleteService = async (req, res) => {
+  try {
+    const result = await dataService.deleteService(dataService.TENANT, req.params.serviceId);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 const distributeServiceLeadsNow = async (req, res) => {
   try {
     const result = await distributeServiceLeads(dataService.TENANT, {
@@ -31,13 +40,18 @@ const distributeServiceLeadsNow = async (req, res) => {
   }
 };
 
-const deleteService = async (req, res) => {
+const updateDistributionConfig = async (req, res) => {
   try {
-    const result = await dataService.deleteService(dataService.TENANT, req.params.serviceId);
+    const { enabled, employeeIds, employeeNames } = req.body;
+    const result = await dataService.updateServiceDistributionConfig(dataService.TENANT, req.params.serviceId, {
+      enabled,
+      employeeIds,
+      employeeNames,
+    });
     res.json(result);
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-module.exports = { listServices, createService, deleteService, distributeServiceLeadsNow };
+module.exports = { listServices, createService, deleteService, distributeServiceLeadsNow, updateDistributionConfig };
