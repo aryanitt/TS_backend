@@ -560,6 +560,14 @@ async function initDatabase() {
       if (error.code !== "ER_DUP_FIELDNAME") throw error;
     });
 
+    // Profile photo lives on the auth identity — same for admin and employee,
+    // returned by /login and /auth/me on every device, so it isn't lost on re-login.
+    await pool.query(`
+      ALTER TABLE users ADD COLUMN avatar_url TEXT NULL
+    `).catch((error) => {
+      if (error.code !== "ER_DUP_FIELDNAME") throw error;
+    });
+
     await pool.query(`
       ALTER TABLE sops ADD COLUMN scripts JSON DEFAULT ('[]')
     `).catch((error) => {

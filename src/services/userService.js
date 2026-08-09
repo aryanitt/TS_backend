@@ -225,6 +225,7 @@ function serializeUser(row) {
     name: row.role === "employee" ? (row.employee_name || row.email) : adminLabel,
     department: row.employee_department || null,
     employeeRole: row.employee_role_title || null,
+    avatarUrl: row.avatar_url || null,
     lastLoginAt: row.last_login_at || null,
     createdAt: row.created_at || null,
   };

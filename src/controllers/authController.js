@@ -90,6 +90,23 @@ const me = async (req, res) => {
   }
 };
 
+const updateMyAvatar = async (req, res) => {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ success: false, message: "Not authenticated" });
+    }
+    const avatarUrl = String(req.body?.avatarUrl || "").trim();
+    if (!avatarUrl) {
+      return res.status(400).json({ success: false, message: "avatarUrl is required" });
+    }
+    await pool.query(`UPDATE users SET avatar_url = $1 WHERE id = $2`, [avatarUrl, req.user.id]);
+    const userRow = await findUserById(req.user.id);
+    return res.json({ success: true, user: serializeUser(userRow) });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 const changePasswordHandler = async (req, res) => {
   try {
     if (!req.user?.id) {
@@ -110,4 +127,4 @@ const changePasswordHandler = async (req, res) => {
   }
 };
 
-module.exports = { login, me, changePasswordHandler };
+module.exports = { login, me, changePasswordHandler, updateMyAvatar };
