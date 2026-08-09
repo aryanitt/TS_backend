@@ -197,6 +197,11 @@ const createLead = async (req, res) => {
 
     const lead = result.rows[0];
 
+    const serviceName = req.body.service || req.body.service_name || req.body.requirements || req.body.notes;
+    if (serviceName) {
+      dataService.ensureServiceExists("default", serviceName).catch((e) => console.error("[salesController] ensureServiceExists error:", e));
+    }
+
     await logActivity({
       action: `New lead added: ${lead.company_name || lead.lead_name}`,
       entity: "lead",

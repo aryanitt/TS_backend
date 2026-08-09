@@ -137,6 +137,12 @@ async function initDatabase() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
 
+    try {
+      await pool.query("ALTER TABLE leads ADD COLUMN stage_is_manual TINYINT(1) DEFAULT 0");
+    } catch (e) {
+      // Ignore if column already exists
+    }
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS lead_assignment_queue (
         id INT AUTO_INCREMENT PRIMARY KEY,

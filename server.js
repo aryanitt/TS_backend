@@ -51,6 +51,12 @@ function mountFullApp() {
     app.use(main);
     global.__appReady = true;
     console.error("[startup] app mounted");
+
+    const { initSocket } = require("./src/realtime/socket");
+    initSocket(server, (origin, callback) => {
+      callback(null, main.isAllowedOrigin ? main.isAllowedOrigin(origin) : true);
+    });
+    console.error("[startup] socket.io attached");
   } catch (error) {
     console.error("[startup] app mount failed:", error);
   }

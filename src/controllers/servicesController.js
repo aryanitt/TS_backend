@@ -31,4 +31,13 @@ const distributeServiceLeadsNow = async (req, res) => {
   }
 };
 
-module.exports = { listServices, createService, distributeServiceLeadsNow };
+const deleteService = async (req, res) => {
+  try {
+    const result = await dataService.deleteService(dataService.TENANT, req.params.serviceId);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+module.exports = { listServices, createService, deleteService, distributeServiceLeadsNow };

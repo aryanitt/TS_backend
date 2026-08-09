@@ -34,6 +34,8 @@ function isAllowedOrigin(origin) {
   if (DEFAULT_FRONTEND_ORIGINS.includes(origin)) return true;
   if (/^https:\/\/[\w-]+\.vercel\.app$/i.test(origin)) return true;
   if (/^http:\/\/localhost:\d+$/i.test(origin)) return true;
+  // Phone/tablet hitting the dev machine's LAN address during local testing.
+  if (/^http:\/\/(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)[\d.]+:\d+$/i.test(origin)) return true;
   const extra = process.env.FRONTEND_URL
     ? process.env.FRONTEND_URL.split(",").map((s) => s.trim()).filter(Boolean)
     : [];
@@ -102,5 +104,7 @@ app.use((err, req, res, next) => {
     message: err.message || "Internal server error",
   });
 });
+
+app.isAllowedOrigin = isAllowedOrigin;
 
 module.exports = app;

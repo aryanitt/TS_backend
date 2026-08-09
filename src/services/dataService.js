@@ -872,36 +872,180 @@ async function saveSettings(tenantId, payload) {
   return { success: true, settings: payload };
 }
 
+function isValidServiceName(name) {
+  if (!name || typeof name !== "string") return false;
+  const str = name.trim();
+  if (!str || str === "—" || str === "undefined" || str === "null") return false;
+  if (str.length > 45) return false;
+
+  const lower = str.toLowerCase();
+  const sentenceJunk = [
+    "karwaega", "karwaege", "agar", "he it self", "itself", "has ", "have ",
+    "will ", "want ", "because ", "asking ", "called ", "said ", "told ",
+    "thinks ", "wants ", "looking for ", "need ", "needed ", "book publishing karwaega"
+  ];
+  if (sentenceJunk.some((word) => lower.includes(word))) return false;
+
+  const words = str.split(/\s+/);
+  if (words.length > 6) return false;
+
+  return true;
+}
+
+function cleanServiceName(raw) {
+  if (!raw || typeof raw !== "string") return "";
+  let str = raw.trim();
+  if (!str || str === "—" || str === "undefined" || str === "null") return "";
+
+  const matchBracket = str.match(/\[Service:\s*([^\]]+)\]/i);
+  if (matchBracket && matchBracket[1]) {
+    const candidate = matchBracket[1].trim();
+    if (isValidServiceName(candidate)) return candidate;
+  }
+
+  const matchColon = str.match(/^Service:\s*([^\n\r\]]+)/i);
+  if (matchColon && matchColon[1]) {
+    const candidate = matchColon[1].trim();
+    if (isValidServiceName(candidate)) return candidate;
+  }
+
+  const matchInline = str.match(/Service:\s*([^\n\r\]]+)/i);
+  if (matchInline && matchInline[1]) {
+    const candidate = matchInline[1].trim();
+    if (isValidServiceName(candidate)) return candidate;
+  }
+
+  if (isValidServiceName(str)) {
+    return str;
+  }
+  return "";
+}
+
+async function ensureServiceExists(tenantId = TENANT, rawServiceName) {
+  const name = cleanServiceName(rawServiceName);
+  if (!name || name === "All Services") return null;
+  if (!(await dbReady())) return null;
+
+  try {
+    const existing = await pool.query(
+      `SELECT * FROM services WHERE tenant_id = $1 AND LOWER(name) = LOWER($2) LIMIT 1`,
+      [tenantId, name],
+    );
+    if (existing.rows && existing.rows.length > 0) {
+      return existing.rows[0];
+    }
+
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    const id = `svc-${slug || Date.now()}`;
+    const newService = {
+      id,
+      name,
+      category: "general",
+      categoryLabel: "General Services",
+      status: "ACTIVE",
+      badge: "POPULAR",
+      description: `Auto-created service offering for ${name}`,
+      revenue: 0,
+      leads: 1,
+      converted: 0,
+      convRate: 0,
+      priceNum: 0,
+      price: "Custom",
+      icon: "briefcase",
+    };
+    await createService(tenantId, newService);
+    return newService;
+  } catch (err) {
+    console.error("[dataService] ensureServiceExists failed:", err);
+    return null;
+  }
+}
+
 async function listServices(tenantId = TENANT) {
   if (!(await dbReady())) return { source: "empty", services: [], success: true };
 
   try {
+    // 1) Scan leads for any service names that don't exist yet in services catalog
+    const leadRows = await pool.query(
+      `SELECT requirements, source_meta FROM leads WHERE tenant_id = $1 AND is_deleted = 0`,
+      [tenantId],
+    );
+    const leadServicesFound = new Set();
+    (leadRows.rows || []).forEach((row) => {
+      const extracted = cleanServiceName(row.requirements);
+      if (extracted) leadServicesFound.add(extracted);
+      if (row.source_meta) {
+        const meta = typeof row.source_meta === "string" ? JSON.parse(row.source_meta) : row.source_meta;
+        if (meta?.service) {
+          const metaExtracted = cleanServiceName(meta.service);
+          if (metaExtracted) leadServicesFound.add(metaExtracted);
+        }
+      }
+    });
+
+    for (const svcName of leadServicesFound) {
+      await ensureServiceExists(tenantId, svcName);
+    }
+
+    // 2) Query all services from catalog
     const result = await pool.query(
       `SELECT * FROM services WHERE tenant_id = $1 ORDER BY created_at DESC`,
       [tenantId],
     );
-    if (!result.rows.length) {
-      return { source: "mock", services: mock.SERVICES, success: true };
-    }
+    let baseServices = result.rows.length ? result.rows.filter((r) => isValidServiceName(r.name)) : mock.SERVICES;
 
-    const services = result.rows.map((r) => ({
-      ...((typeof r.metadata === "string" ? JSON.parse(r.metadata) : r.metadata) || {}),
-      id: r.id,
-      name: r.name,
-      category: r.category,
-      categoryLabel: r.category_label,
-      status: r.status,
-      revenue: Number(r.revenue) || 0,
-      leads: Number(r.leads) || 0,
-      converted: Number(r.converted) || 0,
-      convRate: Number(r.conv_rate) || 0,
-      priceNum: Number(r.price_num) || 0,
-      price: r.price_label,
-      description: r.description,
-      icon: r.icon,
-    }));
+    // 3) Calculate actual lead metrics for each service
+    const allLeadsResult = await pool.query(
+      `SELECT requirements, source_meta, status, expected_revenue FROM leads WHERE tenant_id = $1 AND is_deleted = 0`,
+      [tenantId],
+    );
+    const allLeads = allLeadsResult.rows || [];
+
+    const services = baseServices.map((r) => {
+      const metaObj = (typeof r.metadata === "string" ? JSON.parse(r.metadata) : r.metadata) || {};
+      const svcName = r.name || metaObj.name;
+      
+      // Filter leads belonging to this service
+      const matchingLeads = allLeads.filter((l) => {
+        const reqSvc = cleanServiceName(l.requirements);
+        if (reqSvc && reqSvc.toLowerCase() === String(svcName).toLowerCase()) return true;
+        if (l.source_meta) {
+          const m = typeof l.source_meta === "string" ? JSON.parse(l.source_meta) : l.source_meta;
+          if (m?.service && cleanServiceName(m.service).toLowerCase() === String(svcName).toLowerCase()) return true;
+        }
+        return String(l.requirements || "").toLowerCase().includes(String(svcName).toLowerCase());
+      });
+
+      const leadsCount = matchingLeads.length > 0 ? matchingLeads.length : Number(r.leads) || 0;
+      const convertedCount = matchingLeads.length > 0 
+        ? matchingLeads.filter(l => String(l.status || "").toLowerCase().includes("converted") || String(l.status || "").toLowerCase().includes("payment")).length 
+        : Number(r.converted) || 0;
+      const revenueSum = matchingLeads.length > 0
+        ? matchingLeads.reduce((acc, l) => acc + (Number(l.expected_revenue) || 0), 0)
+        : Number(r.revenue) || 0;
+      const convRate = leadsCount > 0 ? Math.round((convertedCount / leadsCount) * 100) : Number(r.conv_rate) || 0;
+
+      return {
+        ...metaObj,
+        id: r.id,
+        name: svcName,
+        category: r.category || "general",
+        categoryLabel: r.category_label || "General Services",
+        status: r.status || "ACTIVE",
+        revenue: revenueSum,
+        leads: leadsCount,
+        converted: convertedCount,
+        convRate: convRate,
+        priceNum: Number(r.price_num) || 0,
+        price: r.price_label || r.price || "Custom",
+        description: r.description || `Service catalog offering for ${svcName}`,
+        icon: r.icon || "briefcase",
+      };
+    });
+
     return { source: "database", services, success: true };
-  } catch {
+  } catch (err) {
+    console.error("[dataService] listServices error:", err);
     return { source: "empty", services: [], success: true };
   }
 }
@@ -928,13 +1072,28 @@ async function createService(tenantId, data) {
        metadata = VALUES(metadata),
        updated_at = NOW()`,
     [
-      id, tenantId, data.name, data.category || "ai", data.categoryLabel || "",
+      id, tenantId, data.name, data.category || "general", data.categoryLabel || "General Services",
       data.status || "ACTIVE", data.description || "", data.revenue || 0,
       data.leads || 0, data.converted || 0, data.convRate || 0,
-      data.priceNum || 0, data.price || "", data.icon || "bot", metadata,
+      data.priceNum || 0, data.price || "Custom", data.icon || "briefcase", metadata,
     ],
   );
   return { success: true, service: { ...data, id } };
+}
+
+async function deleteService(tenantId = TENANT, serviceId) {
+  if (!(await dbReady())) return { success: false, message: "DB not available" };
+
+  try {
+    await pool.query(
+      `DELETE FROM services WHERE tenant_id = $1 AND (id = $2 OR LOWER(name) = LOWER($2))`,
+      [tenantId, serviceId],
+    );
+    return { success: true, message: "Service deleted successfully" };
+  } catch (err) {
+    console.error("[dataService] deleteService error:", err);
+    return { success: false, message: err.message };
+  }
 }
 
 async function updateServiceDistributionIndex(tenantId, serviceId, rrIndex) {
@@ -1445,6 +1604,9 @@ module.exports = {
   saveSettings,
   listServices,
   createService,
+  deleteService,
+  ensureServiceExists,
+  cleanServiceName,
   updateServiceDistributionIndex,
   listForms,
   createForm,

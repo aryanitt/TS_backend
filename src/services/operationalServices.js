@@ -130,9 +130,18 @@ async function notify({ tenantId, employeeId, userId, type, title, body, entityT
   return notification;
 }
 
+const dataService = require("./dataService");
+
 async function createLead(input, options = {}) {
   const tenantId = options.tenantId || DEFAULT_TENANT_ID;
-  const lead = await repo.insertLead(tenantId, normalizeLeadInput(input));
+  const normalized = normalizeLeadInput(input);
+  const lead = await repo.insertLead(tenantId, normalized);
+
+  // Auto-create service in catalog if a service is specified for this lead
+  const serviceName = input.services || input.service || input.serviceName || normalized.requirements;
+  if (serviceName) {
+    dataService.ensureServiceExists(tenantId, serviceName).catch((e) => console.error("[createLead] ensureServiceExists error:", e));
+  }
 
   const priority = lead.temperature === "hot" ? 100 : lead.temperature === "warm" ? 50 : 10;
   const queueItem = await repo.insertQueueItem(tenantId, lead.id, priority);
@@ -359,6 +368,7 @@ async function updateLeadStage({ tenantId, leadId, stage, status, actor: a }) {
 
   const patch = {
     pipelineStage: stage,
+    stageIsManual: true,
     lastActivityAt: new Date(),
   };
   if (status) patch.status = status;
