@@ -6,7 +6,12 @@ const { verifyToken, JWT_SECRET } = require("../utils/token");
 const { APP_TZ } = require("../utils/appTimezone");
 const { logger } = require("../config/logger");
 
-const SCOPES = ["https://www.googleapis.com/auth/calendar.events"];
+const SCOPES = [
+  "https://www.googleapis.com/auth/calendar.events",
+  "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/userinfo.profile",
+  "openid",
+];
 const OAUTH_STATE_PURPOSE = "google_oauth";
 
 function isConfigured() {
