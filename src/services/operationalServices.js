@@ -138,7 +138,7 @@ async function createLead(input, options = {}) {
   const lead = await repo.insertLead(tenantId, normalized);
 
   // Auto-create service in catalog if a service is specified for this lead
-  const serviceName = input.services || input.service || input.serviceName || normalized.requirements;
+  const serviceName = input.services || input.service || input.serviceName || input.service_name || normalized.requirements;
   if (serviceName) {
     dataService.ensureServiceExists(tenantId, serviceName).catch((e) => console.error("[createLead] ensureServiceExists error:", e));
   }
@@ -157,11 +157,79 @@ async function createLead(input, options = {}) {
 
   emitTenant(tenantId, "lead.created", lead);
 
-  if (options.autoAssign !== false) {
-    processAssignmentQueue(tenantId, { limit: 1, actor: options.actor }).catch(() => {});
+  let assignedEmployeeId = null;
+
+  // Handle direct employee assignment from payload if provided (by name, email or ID)
+  const rawEmp = input.employeeId || input.employee_id || input.assignedTo || input.assigned_to || input.employeeName || input.employee_name || input.employee || input.rep_name || input.repName;
+  if (rawEmp) {
+    try {
+      const activeEmps = await repo.listActiveEmployees(tenantId);
+      let targetEmp = null;
+      if (!isNaN(rawEmp)) {
+        targetEmp = activeEmps.find((e) => Number(e.id) === Number(rawEmp));
+      }
+      if (!targetEmp && typeof rawEmp === "string") {
+        const needle = rawEmp.trim().toLowerCase();
+        targetEmp = activeEmps.find((e) => e.name.toLowerCase().includes(needle) || (e.email && e.email.toLowerCase().includes(needle)));
+      }
+      if (targetEmp) {
+        await assignLead({
+          tenantId,
+          leadId: lead.id,
+          employeeId: targetEmp.id,
+          method: "webhook",
+          performedBy: options.actor?.actorId || "webhook:n8n",
+          reason: "Direct assignment via n8n payload",
+          actor: options.actor,
+        });
+        assignedEmployeeId = targetEmp.id;
+      }
+    } catch (empErr) {
+      console.error("[createLead] Direct employee assignment failed:", empErr);
+    }
   }
 
-  return { lead, queueItem };
+  // Fallback to auto-assignment queue if not directly assigned
+  if (!assignedEmployeeId && options.autoAssign !== false) {
+    try {
+      const assignRes = await processAssignmentQueue(tenantId, { limit: 1, actor: options.actor });
+      if (assignRes && assignRes.assigned && assignRes.assigned.length > 0) {
+        assignedEmployeeId = assignRes.assigned[0].employeeId;
+      }
+    } catch (qErr) {
+      console.error("[createLead] Auto assignment error:", qErr);
+    }
+  }
+
+  // Auto-schedule meeting if meeting link or meeting date is provided in payload
+  const meetLink = input.meetLink || input.meet_link || input.meetingLink || input.meeting_link || input.meeting_url || input.google_meet_link;
+  const meetingTime = input.scheduledAt || input.scheduled_at || input.meetingTime || input.meeting_time || input.meeting_date;
+  if (meetLink || meetingTime) {
+    try {
+      const empId = assignedEmployeeId || (await repo.findLeadById(tenantId, lead.id))?.assignedTo?.id;
+      if (empId) {
+        await createMeeting({
+          tenantId,
+          data: {
+            leadId: lead.id,
+            employeeId: empId,
+            title: input.meetingTitle || input.meeting_title || (serviceName ? `Discovery Meeting: ${serviceName}` : `Lead Meeting - ${lead.leadName}`),
+            scheduledAt: meetingTime ? new Date(meetingTime) : new Date(Date.now() + 3600 * 1000),
+            durationMin: Number(input.durationMin || input.duration_min || 30),
+            meetLink: meetLink || null,
+            location: meetLink ? "Google Meet" : (input.location || "Online"),
+            agenda: input.agenda || input.notes || `Initial discussion for ${lead.leadName}`,
+          },
+          actor: options.actor,
+        });
+      }
+    } catch (meetErr) {
+      console.error("[createLead] Auto create meeting error:", meetErr);
+    }
+  }
+
+  const finalLead = await repo.findLeadById(tenantId, lead.id, { populate: true });
+  return { lead: finalLead || lead, queueItem };
 }
 
 async function getOrCreateAssignmentConfig(tenantId) {
