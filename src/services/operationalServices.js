@@ -159,9 +159,13 @@ async function createLead(input, options = {}) {
 
   let assignedEmployeeId = null;
 
-  // Handle direct employee assignment from payload if provided (by name, email or ID)
+  // Check assignment configuration for n8n auto-assign toggle
+  const assignmentConfig = await getOrCreateAssignmentConfig(tenantId);
+  const n8nAutoAssignEnabled = assignmentConfig?.n8nAutoAssignEnabled !== false;
+
+  // Priority 1: If n8n automation is enabled AND employee name/ID is provided -> assign to specified employee
   const rawEmp = input.employeeId || input.employee_id || input.assignedTo || input.assigned_to || input.employeeName || input.employee_name || input.employee || input.rep_name || input.repName;
-  if (rawEmp) {
+  if (n8nAutoAssignEnabled && rawEmp) {
     try {
       const activeEmps = await repo.listActiveEmployees(tenantId);
       let targetEmp = null;
@@ -177,19 +181,67 @@ async function createLead(input, options = {}) {
           tenantId,
           leadId: lead.id,
           employeeId: targetEmp.id,
-          method: "webhook",
+          method: "n8n_direct",
           performedBy: options.actor?.actorId || "webhook:n8n",
-          reason: "Direct assignment via n8n payload",
+          reason: `Direct n8n assignment to ${targetEmp.name}`,
           actor: options.actor,
         });
         assignedEmployeeId = targetEmp.id;
       }
     } catch (empErr) {
-      console.error("[createLead] Direct employee assignment failed:", empErr);
+      console.error("[createLead] Direct n8n employee assignment failed:", empErr);
     }
   }
 
-  // Fallback to auto-assignment queue if not directly assigned
+  // Priority 2: If no employee name was matched/provided, BUT a service is provided -> use existing service-based assignment logic
+  if (!assignedEmployeeId && serviceName) {
+    try {
+      const activeEmps = await repo.listActiveEmployees(tenantId);
+      const { services = [] } = await dataService.listServices(tenantId);
+      const needleService = String(serviceName).trim().toLowerCase();
+      
+      const matchedSvc = services.find((s) => {
+        const sName = String(s.name || "").trim().toLowerCase();
+        return sName === needleService || sName.includes(needleService) || needleService.includes(sName);
+      });
+
+      let serviceEmp = null;
+
+      // Check if service has configured distribution employees
+      if (matchedSvc && matchedSvc.distributionEnabled && Array.isArray(matchedSvc.distributionEmployeeIds) && matchedSvc.distributionEmployeeIds.length > 0) {
+        const eligibleIds = matchedSvc.distributionEmployeeIds.map(Number);
+        const candidates = activeEmps.filter((e) => eligibleIds.includes(Number(e.id)));
+        if (candidates.length > 0) {
+          serviceEmp = candidates[Math.floor(Math.random() * candidates.length)];
+        }
+      }
+
+      // Fallback: match employee by department / role matching service name
+      if (!serviceEmp) {
+        serviceEmp = activeEmps.find((e) => {
+          const dept = String(e.department || e.role || "").toLowerCase();
+          return dept && (dept.includes(needleService) || needleService.includes(dept));
+        });
+      }
+
+      if (serviceEmp) {
+        await assignLead({
+          tenantId,
+          leadId: lead.id,
+          employeeId: serviceEmp.id,
+          method: "service_based",
+          performedBy: options.actor?.actorId || "system:service_router",
+          reason: `Service-based assignment for ${serviceName}`,
+          actor: options.actor,
+        });
+        assignedEmployeeId = serviceEmp.id;
+      }
+    } catch (serviceErr) {
+      console.error("[createLead] Service-based assignment failed:", serviceErr);
+    }
+  }
+
+  // Priority 3: Fallback to default auto-assignment queue (Round-Robin / Workload) if not assigned by Priority 1 or 2
   if (!assignedEmployeeId && options.autoAssign !== false) {
     try {
       const assignRes = await processAssignmentQueue(tenantId, { limit: 1, actor: options.actor });
@@ -219,6 +271,7 @@ async function createLead(input, options = {}) {
             meetLink: meetLink || null,
             location: meetLink ? "Google Meet" : (input.location || "Online"),
             agenda: input.agenda || input.notes || `Initial discussion for ${lead.leadName}`,
+            source: "lead",
           },
           actor: options.actor,
         });

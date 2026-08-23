@@ -238,17 +238,26 @@ function mapFollowup(row) {
 
 function mapMeeting(row) {
   if (!row) return null;
+  const leadId = row.lead_id || null;
+  const source = row.source || (leadId ? "lead" : "direct");
   return withId({
     id: row.id,
     tenantId: row.tenant_id,
-    leadId: row.lead_id,
+    leadId,
     employeeId: row.employee_id,
+    employeeName: row.employee_name || null,
     title: row.title,
     scheduledAt: toLocalSqlString(row.scheduled_at),
     durationMin: row.duration_min,
     meetLink: row.meet_link,
     location: row.location,
     status: row.status,
+    source,
+    leadName: row.lead_name || null,
+    leadPhone: row.lead_phone || null,
+    leadEmail: row.lead_email || null,
+    leadCompany: row.lead_company || null,
+    leadService: row.lead_service || null,
     mom: row.mom || {},
     createdAt: toLocalSqlString(row.created_at),
   });
@@ -1362,7 +1371,14 @@ async function updateMeeting(tenantId, meetingId, patch) {
 async function listMeetings(tenantId, employeeId, options = {}) {
   const limit = Math.min(Math.max(Number(options.limit) || 1000, 1), 2000);
   const result = await pool.query(
-    `SELECT * FROM meetings WHERE tenant_id = $1 AND employee_id = $2 ORDER BY scheduled_at ASC LIMIT ${limit}`,
+    `SELECT m.*,
+            l.lead_name, l.phone AS lead_phone, l.email AS lead_email, l.company_name AS lead_company, l.form_name AS lead_service,
+            e.name AS employee_name
+     FROM meetings m
+     LEFT JOIN leads l ON l.id = m.lead_id
+     LEFT JOIN employees e ON e.id = m.employee_id
+     WHERE m.tenant_id = $1 AND m.employee_id = $2
+     ORDER BY m.scheduled_at ASC LIMIT ${limit}`,
     [tenantId, employeeId],
   );
   return result.rows.map(mapMeeting);
@@ -1371,7 +1387,14 @@ async function listMeetings(tenantId, employeeId, options = {}) {
 async function listTenantMeetings(tenantId, options = {}) {
   const limit = Math.min(Math.max(Number(options.limit) || 1000, 1), 2000);
   const result = await pool.query(
-    `SELECT * FROM meetings WHERE tenant_id = $1 ORDER BY scheduled_at ASC LIMIT ${limit}`,
+    `SELECT m.*,
+            l.lead_name, l.phone AS lead_phone, l.email AS lead_email, l.company_name AS lead_company, l.form_name AS lead_service,
+            e.name AS employee_name
+     FROM meetings m
+     LEFT JOIN leads l ON l.id = m.lead_id
+     LEFT JOIN employees e ON e.id = m.employee_id
+     WHERE m.tenant_id = $1
+     ORDER BY m.scheduled_at ASC LIMIT ${limit}`,
     [tenantId],
   );
   return result.rows.map(mapMeeting);
