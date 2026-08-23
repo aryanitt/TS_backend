@@ -33,6 +33,14 @@ async function initDatabase() {
       // Ignore if column already exists
     }
 
+    // A SOP can now apply to more than one service — keeps the legacy single
+    // `service` column (first value) for any code that hasn't been updated yet.
+    try {
+      await pool.query("ALTER TABLE sops ADD COLUMN services JSON DEFAULT ('[]')");
+    } catch (e) {
+      // Ignore if column already exists
+    }
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS sop_comments (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -564,6 +572,14 @@ async function initDatabase() {
     // returned by /login and /auth/me on every device, so it isn't lost on re-login.
     await pool.query(`
       ALTER TABLE users ADD COLUMN avatar_url TEXT NULL
+    `).catch((error) => {
+      if (error.code !== "ER_DUP_FIELDNAME") throw error;
+    });
+
+    // Per-call AI scoring on the five fixed sales-competency dimensions shown
+    // on the incentive radar chart (Product Value Alignment, Call Control, etc.).
+    await pool.query(`
+      ALTER TABLE employee_calls ADD COLUMN competency_scores JSON DEFAULT ('{}')
     `).catch((error) => {
       if (error.code !== "ER_DUP_FIELDNAME") throw error;
     });

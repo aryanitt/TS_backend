@@ -8,12 +8,79 @@ function getCallAiModel() {
   return process.env.OPENAI_CALL_MODEL || DEFAULT_CALL_AI_MODEL;
 }
 
+/** The Service field stores a bare name today, but older leads may carry the
+ *  legacy "[Service: X] notes" / "Service: X" prefix used by n8n ingestion. */
+function extractServiceFromRequirements(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  const bracketed = text.match(/^\[Service:\s*([^\]]+)\]/i);
+  if (bracketed) return bracketed[1].trim();
+  const prefixed = text.match(/^Service:\s*(.+)$/i);
+  if (prefixed) return prefixed[1].trim();
+  return text;
+}
+
+/** Find the SOP that should guide AI analysis for this lead's service — a SOP
+ *  assigned to multiple services matches any of them; an exact match wins over
+ *  a generic "All Services" SOP. `sops` has no tenant_id column (single-tenant table). */
+async function findSopForService(tenantId, serviceName) {
+  const result = await pool.query(
+    `SELECT * FROM sops WHERE status <> 'Archived' ORDER BY updated_at DESC`,
+  );
+  const candidates = result.rows.map((row) => {
+    let services = row.services;
+    if (typeof services === "string") {
+      try { services = JSON.parse(services); } catch { services = []; }
+    }
+    if (!Array.isArray(services) || !services.length) services = [row.service || "All Services"];
+    return { row, services };
+  });
+
+  if (serviceName) {
+    const exact = candidates.find((c) => c.services.includes(serviceName));
+    if (exact) return exact.row;
+  }
+  const fallback = candidates.find((c) => c.services.includes("All Services"));
+  return fallback?.row || null;
+}
+
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+/** Build the "evaluate against this SOP" block injected into the AI prompt. */
+function buildSopGuidanceBlock(sop) {
+  if (!sop) {
+    return { label: null, text: "No SOP is assigned to this lead's service yet — evaluate using general sales best practices." };
+  }
+  const questions = parseJsonArray(sop.questions);
+  const frameworks = parseJsonArray(sop.frameworks);
+  const lines = [
+    `SOP Guidance: "${sop.title}" (${sop.category || "Sales Call"}) — service: ${sop.service || "All Services"}`,
+  ];
+  if (sop.script) lines.push(`Reference script:\n${sop.script}`);
+  if (frameworks.length) lines.push(`Frameworks reps are trained to use: ${frameworks.join(", ")}`);
+  if (questions.length) {
+    lines.push(`Qualification checklist reps must cover on this type of call:\n${questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`);
+  }
+  return { label: `${sop.title} (${sop.category || "Sales Call"})`, text: lines.join("\n\n") };
+}
+
 async function processCallWithAi(tenantId, callId) {
   const apiKey = process.env.OPENAI_API_KEY;
 
   // 1. Fetch the call log & associated lead info
   const callRes = await pool.query(
-    `SELECT c.*, l.lead_name, l.phone as lead_phone, l.company_name, l.status as lead_status, l.notes as lead_notes
+    `SELECT c.*, l.lead_name, l.phone as lead_phone, l.company_name, l.status as lead_status, l.notes as lead_notes, l.requirements as lead_requirements
      FROM employee_calls c
      LEFT JOIN leads l ON c.lead_id = l.id
      WHERE c.id = $1 AND (c.tenant_id = $2 OR c.tenant_id IS NULL) LIMIT 1`,
@@ -23,6 +90,9 @@ async function processCallWithAi(tenantId, callId) {
     throw new Error("Call log not found");
   }
   const call = callRes.rows[0];
+  const leadService = extractServiceFromRequirements(call.lead_requirements);
+  const matchedSop = await findSopForService(tenantId, leadService);
+  const sopGuidance = buildSopGuidanceBlock(matchedSop);
 
   const clientName = call.lead_name || call.notes || "Client";
   const durationSec = Number(call.duration_sec) || 0;
@@ -51,6 +121,8 @@ async function processCallWithAi(tenantId, callId) {
   let sentiment = "neutral";
   let rating = 0;
   let temperature = "Warm Lead";
+  let checklistProgress = [];
+  let competencyScores = {};
 
   const hasRecording = Boolean(call.recording_url && String(call.recording_url).trim());
 
@@ -125,21 +197,41 @@ async function processCallWithAi(tenantId, callId) {
 Generate a structured Minutes of Meeting (MoM) containing ONLY facts discussed in the transcript.
 Do NOT invent or hallucinate facts outside the audio transcript.
 
+${sopGuidance.text}
+
 Generate:
 1. "summary": A structured Minutes of Meeting (MoM):
    - Call Header (Date: ${dateStr}, Time: ${timeStr}, Client: ${clientName}, Duration: ${durationStr})
+   ${sopGuidance.label ? `- SOP Guidance Used: ${sopGuidance.label}` : ""}
    - Discussion Highlights & Key Requirements
+   - Qualifications Met: go through the SOP's qualification checklist above (if any) and state which items were actually covered on the call and which were missed — quote or paraphrase where each was addressed
    - Action Items & Next Steps
 2. "sentiment": "positive" | "neutral" | "negative"
 3. "rating": integer 1-5
 4. "temperature": "Hot Lead" | "Warm Lead" | "Cold Lead"
+5. "checklistProgress": for EACH item in the SOP qualification checklist above, an object { "question": <the checklist item text>, "covered": true|false, "note": "<one line on what was said, or empty if not covered>" }. Return an empty array if no checklist was provided.
+6. "competencyScores": score the rep 0-100 on each of these five fixed dimensions, judged against the SOP script/frameworks/checklist above where provided:
+   - "Product Value Alignment": how well the rep tied the product/service to the client's stated needs
+   - "Call Control": did the rep guide the conversation and the agenda rather than being led
+   - "Listening Skills": evidence the rep listened and responded to what the client actually said (not scripted talk-over)
+   - "KYC Questioning": did the rep ask discovery/qualification questions to understand the client's situation
+   - "Objection Handling": how well any pushback or hesitation from the client was addressed
+   Use 0 for a dimension only if the call gave no signal either way (e.g. call ended immediately).
 
 Return JSON with exact keys:
 {
   "summary": "...",
   "sentiment": "positive",
   "rating": 5,
-  "temperature": "Hot Lead"
+  "temperature": "Hot Lead",
+  "checklistProgress": [{ "question": "...", "covered": true, "note": "..." }],
+  "competencyScores": {
+    "Product Value Alignment": 70,
+    "Call Control": 65,
+    "Listening Skills": 80,
+    "KYC Questioning": 55,
+    "Objection Handling": 60
+  }
 }`,
               },
               {
@@ -160,6 +252,10 @@ Return JSON with exact keys:
           sentiment = analysis.sentiment || "positive";
           rating = Number(analysis.rating) || 5;
           temperature = analysis.temperature || "Warm Lead";
+          checklistProgress = Array.isArray(analysis.checklistProgress) ? analysis.checklistProgress : [];
+          competencyScores = (analysis.competencyScores && typeof analysis.competencyScores === "object")
+            ? analysis.competencyScores
+            : {};
         } else {
           summaryText = `[REAL AUDIO TRANSCRIPT]\nCall Date: ${dateStr} at ${timeStr}\nDuration: ${durationStr}\n\n${transcript}`;
         }
@@ -171,10 +267,14 @@ Return JSON with exact keys:
 
   // Update employee_calls in DB
   await pool.query(
-    `UPDATE employee_calls 
-     SET transcript = $1, notes = $2, ai_summary = $3, outcome = $4, duration_sec = COALESCE(NULLIF(duration_sec, 0), $5)
-     WHERE id = $6`,
-    [String(transcript), summaryText, summaryText, effectiveOutcome, durationSec, callId]
+    `UPDATE employee_calls
+     SET transcript = $1, notes = $2, ai_summary = $3, outcome = $4, duration_sec = COALESCE(NULLIF(duration_sec, 0), $5),
+         sop_id = $6, checklist_progress = $7, competency_scores = $8
+     WHERE id = $9`,
+    [
+      String(transcript), summaryText, summaryText, effectiveOutcome, durationSec,
+      matchedSop?.id || null, JSON.stringify(checklistProgress), JSON.stringify(competencyScores), callId,
+    ]
   );
 
   // Update lead in DB if real recording transcript was processed

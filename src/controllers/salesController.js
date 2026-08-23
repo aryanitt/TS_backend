@@ -96,12 +96,29 @@ const getSalesDashboard = (req, res) => {
 const getAllLeads = async (req, res) => {
   try {
     const result = await pool.query(
-      "SELECT * FROM leads ORDER BY id DESC"
+      `SELECT l.*, e.name AS assignee_name, e.name AS employee_name, e.name AS assigned_employee, e.initials AS assignee_initials
+       FROM leads l
+       LEFT JOIN employees e ON e.id = l.assigned_to
+       WHERE l.is_deleted = 0
+       ORDER BY l.id DESC`
     );
+
+    const leads = result.rows.map((row) => ({
+      ...row,
+      assignedTo: row.assignee_name && row.assigned_to
+        ? { id: row.assigned_to, name: row.assignee_name, initials: row.assignee_initials }
+        : (row.assignee_name ? { id: row.assigned_to || `emp-${row.assignee_name}`, name: row.assignee_name } : null),
+      assigneeName: row.assignee_name || "Unassigned",
+      assignee_name: row.assignee_name || "Unassigned",
+      employeeName: row.assignee_name || "Unassigned",
+      assigned_employee: row.assignee_name || "Unassigned",
+      owner: row.assignee_name || "Unassigned",
+      assignee: row.assignee_name || "Unassigned",
+    }));
 
     res.json({
       success: true,
-      leads: result.rows,
+      leads,
     });
   } catch (error) {
     console.error("Error fetching leads:", error);
@@ -633,6 +650,17 @@ const getOppCategoryLeads = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+const getSalesAiInsights = async (req, res) => {
+  try {
+    const { employee, service } = req.query;
+    const data = await dataService.getSalesAiInsights(undefined, { employee, service });
+    res.json(data);
+  } catch (error) {
+    console.error("sales-ai-insights error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = {
   getSalesDashboard,
   getAllLeads,
@@ -646,5 +674,6 @@ module.exports = {
   getEmpLeadStatusHistory,
   getEmpLeadsPipelineStats,
   getSalesFunnelKPIs,
-  getOppCategoryLeads
+  getOppCategoryLeads,
+  getSalesAiInsights,
 };

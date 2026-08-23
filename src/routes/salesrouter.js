@@ -15,6 +15,7 @@ const {
   getEmpLeadsPipelineStats,
   getSalesFunnelKPIs,
   getOppCategoryLeads,
+  getSalesAiInsights,
 } = require("../controllers/salesController");
 
 /* ─────────────────────────────────────────
@@ -38,6 +39,7 @@ router.delete("/leads/:id",         deleteLead);
 router.get("/emp-leads/pipeline-stats",        getEmpLeadsPipelineStats);
 router.get("/emp-leads/sales-kpis",            getSalesFunnelKPIs);
 router.get("/emp-leads/opp-leads",             getOppCategoryLeads);
+router.get("/emp-leads/sales-ai-insights",     getSalesAiInsights);
 router.get("/emp-leads",                        getEmpLeads);
 router.post("/emp-leads/create",               createEmpLead);
 router.get("/emp-leads/:id/status-history",    getEmpLeadStatusHistory);    // ← /:id route, but has extra segment so safe

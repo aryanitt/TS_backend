@@ -170,6 +170,33 @@ const getEmployees = async (req, res) => {
       `SELECT e.*,
         m.name AS manager_name,
         (SELECT COUNT(*) FROM leads l WHERE l.assigned_to = e.id AND l.is_deleted = 0) AS leads,
+        (SELECT COUNT(*) FROM leads l WHERE l.assigned_to = e.id AND l.is_deleted = 0) AS total_leads,
+        COALESCE((
+          SELECT COUNT(*) FROM employee_calls ec WHERE ec.employee_id = e.id
+        ), 0) AS total_calls,
+        COALESCE((
+          SELECT COUNT(*) FROM employee_calls ec 
+          WHERE ec.employee_id = e.id AND (ec.duration_sec > 0 OR LOWER(COALESCE(ec.outcome, '')) IN ('connected', 'picked_up', 'answered'))
+        ), 0) AS pickup_calls,
+        COALESCE((
+          SELECT COUNT(*) FROM meetings m WHERE m.employee_id = e.id
+        ), 0) + (
+          SELECT COUNT(*) FROM leads l 
+          WHERE l.assigned_to = e.id AND l.is_deleted = 0 
+          AND (LOWER(COALESCE(l.pipeline_stage, '')) IN ('meeting booked', 'meeting done', 'booked') OR LOWER(COALESCE(l.status, '')) IN ('meeting booked', 'meeting done', 'booked'))
+        ) AS meetings_booked,
+        (
+          SELECT COUNT(*) FROM leads l 
+          WHERE l.assigned_to = e.id AND l.is_deleted = 0 
+          AND (LOWER(COALESCE(l.pipeline_stage, '')) LIKE '%proposal%' OR LOWER(COALESCE(l.status, '')) LIKE '%proposal%')
+        ) AS proposals_sent,
+        COALESCE((
+          SELECT SUM(cc.amount) FROM cash_collections cc WHERE cc.employee_id = e.id
+        ), 0) + COALESCE((
+          SELECT SUM(l.expected_revenue) FROM leads l 
+          WHERE l.assigned_to = e.id AND l.is_deleted = 0 
+          AND (LOWER(COALESCE(l.pipeline_stage, '')) IN ('converted', 'won', 'closed won', 'payment complete') OR LOWER(COALESCE(l.status, '')) IN ('converted', 'won', 'payment complete', 'advance received', 'paid'))
+        ), 0) AS cash_collected,
         (SELECT COUNT(*) FROM leads l
           WHERE l.assigned_to = e.id AND l.is_deleted = 0
             AND (
@@ -979,6 +1006,76 @@ const getEmployeeCallyzerStats = async (req, res) => {
   }
 };
 
+const COMPETENCY_DIMENSIONS = [
+  "Product Value Alignment",
+  "Call Control",
+  "Listening Skills",
+  "KYC Questioning",
+  "Objection Handling",
+];
+
+/** Average the per-call AI competency scores (radar chart on the incentive page). */
+const getEmployeeCompetencyScores = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const month = req.query.month;
+    const period = String(req.query.period || "month").toLowerCase();
+
+    const periodFilter = buildPeriodDateFilter({
+      period: month ? "month" : period,
+      month,
+      column: "COALESCE(started_at, created_at)",
+      paramOffset: 3,
+    });
+
+    const params = ["default", id, ...periodFilter.params];
+    const result = await pool.query(
+      `SELECT competency_scores FROM employee_calls
+       WHERE tenant_id = $1 AND employee_id = $2 AND ${periodFilter.clause}
+         AND competency_scores IS NOT NULL AND competency_scores <> '{}'`,
+      params,
+    );
+
+    const sums = Object.fromEntries(COMPETENCY_DIMENSIONS.map((d) => [d, 0]));
+    const counts = Object.fromEntries(COMPETENCY_DIMENSIONS.map((d) => [d, 0]));
+    let callsScored = 0;
+
+    for (const row of result.rows) {
+      let scores = row.competency_scores;
+      if (typeof scores === "string") {
+        try { scores = JSON.parse(scores); } catch { scores = {}; }
+      }
+      if (!scores || typeof scores !== "object") continue;
+      let hadAny = false;
+      for (const dim of COMPETENCY_DIMENSIONS) {
+        const val = Number(scores[dim]);
+        if (Number.isFinite(val) && val > 0) {
+          sums[dim] += val;
+          counts[dim] += 1;
+          hadAny = true;
+        }
+      }
+      if (hadAny) callsScored += 1;
+    }
+
+    const competency = Object.fromEntries(
+      COMPETENCY_DIMENSIONS.map((d) => [d, counts[d] ? Math.round(sums[d] / counts[d]) : 0]),
+    );
+
+    res.json({
+      success: true,
+      employeeId: Number(id),
+      competency,
+      callsScored,
+      period: periodFilter.period || period,
+      label: periodFilter.label,
+    });
+  } catch (error) {
+    console.error("Employee competency scores error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 const getTeamCallyzerStatsByEmployee = async (req, res) => {
   try {
     const month = req.query.month;
@@ -1029,6 +1126,7 @@ module.exports = {
   getEmployeeDetails,
   getEmployeeLeads,
   getEmployeeCallyzerStats,
+  getEmployeeCompetencyScores,
   getTeamCallyzerStatsByEmployee,
   createEmployee,
   updateEmployee,

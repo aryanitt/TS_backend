@@ -14,6 +14,8 @@ function withId(row, mapper) {
 
 function mapLead(row, assignedEmployee) {
   if (!row) return null;
+  const emp = assignedEmployee || joinEmployee(row);
+  const empName = emp?.name || emp?.emp_name || row.assignee_name || row.employee_name || row.assigned_employee || "";
   const lead = {
     id: row.id,
     tenantId: row.tenant_id,
@@ -35,7 +37,14 @@ function mapLead(row, assignedEmployee) {
     currency: row.currency,
     priority: row.priority,
     assignmentStatus: row.assignment_status,
-    assignedTo: row.assigned_to,
+    assignedTo: emp ? {
+      id: emp.id ?? emp.emp_id,
+      _id: emp.id ?? emp.emp_id,
+      name: emp.name ?? emp.emp_name,
+      email: emp.email ?? emp.emp_email,
+      role: emp.role ?? emp.emp_role,
+      department: emp.department ?? emp.emp_department,
+    } : (empName ? { id: row.assigned_to || `emp-${empName}`, name: empName } : row.assigned_to),
     assignedAt: row.assigned_at,
     assignedBy: row.assigned_by,
     assignmentMethod: row.assignment_method,
@@ -52,18 +61,12 @@ function mapLead(row, assignedEmployee) {
     isDeleted: row.is_deleted,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    assigneeName: empName || "Unassigned",
+    employeeName: empName || "Unassigned",
+    assigned_employee: empName || "Unassigned",
+    owner: empName || "Unassigned",
+    assignee: empName || "Unassigned",
   };
-  if (assignedEmployee) {
-    const empId = assignedEmployee.id ?? assignedEmployee.emp_id;
-    lead.assignedTo = {
-      id: empId,
-      _id: empId,
-      name: assignedEmployee.name ?? assignedEmployee.emp_name,
-      email: assignedEmployee.email ?? assignedEmployee.emp_email,
-      role: assignedEmployee.role ?? assignedEmployee.emp_role,
-      department: assignedEmployee.department ?? assignedEmployee.emp_department,
-    };
-  }
   return withId(lead);
 }
 

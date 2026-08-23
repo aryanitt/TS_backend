@@ -18,14 +18,18 @@ const parseJsonField = (value, fallback = []) => {
   return value;
 };
 
-const normalizeSopRow = (sop) => ({
-  ...sop,
-  service: sop.service || "All Services",
-  questions: parseJsonField(sop.questions, []),
-  frameworks: parseJsonField(sop.frameworks, []),
-  tags: parseJsonField(sop.tags, []),
-  instruction_steps: parseJsonField(sop.instruction_steps, []),
-});
+const normalizeSopRow = (sop) => {
+  const services = parseJsonField(sop.services, []);
+  return {
+    ...sop,
+    service: sop.service || "All Services",
+    services: services.length ? services : [sop.service || "All Services"],
+    questions: parseJsonField(sop.questions, []),
+    frameworks: parseJsonField(sop.frameworks, []),
+    tags: parseJsonField(sop.tags, []),
+    instruction_steps: parseJsonField(sop.instruction_steps, []),
+  };
+};
 
 async function fetchSopById(id) {
   const result = await pool.query("SELECT * FROM sops WHERE id = $1 LIMIT 1", [id]);
@@ -35,8 +39,8 @@ async function fetchSopById(id) {
 async function insertSopRow(values) {
   const result = await pool.query(
     `INSERT INTO sops
-      (title, description, category, status, priority, department, estimated_time, script, questions, frameworks, tags, instruction_steps, attachment_url, scripts, service)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      (title, description, category, status, priority, department, estimated_time, script, questions, frameworks, tags, instruction_steps, attachment_url, scripts, service, services)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
     values,
   );
   const insertId = result.insertId ?? result.rows?.[0]?.id;
@@ -71,6 +75,7 @@ const buildSopValues = (body) => {
     instruction_steps,
     attachment_url,
     service,
+    services,
   } = body;
 
   if (!title?.trim()) {
@@ -104,6 +109,10 @@ const buildSopValues = (body) => {
     throw err;
   }
 
+  const servicesList = Array.isArray(services) && services.length
+    ? services.filter(Boolean)
+    : [service || "All Services"];
+
   return [
     title.trim(),
     description.trim(),
@@ -119,7 +128,8 @@ const buildSopValues = (body) => {
     steps,
     attachment_url || null,
     Array.isArray(scripts) ? scripts : [],
-    service || "All Services",
+    servicesList[0],
+    servicesList,
   ];
 };
 
@@ -219,8 +229,9 @@ async function listAllSops() {
           attachment_url = $13,
           scripts = $14,
           service = $15,
+          services = $16,
           updated_at = NOW()
-         WHERE id = $16`,
+         WHERE id = $17`,
         values
       );
 
@@ -317,6 +328,8 @@ async function listAllSops() {
         sop.instruction_steps || [],
         sop.attachment_url,
         sop.scripts || [],
+        sop.service || "All Services",
+        sop.services?.length ? sop.services : [sop.service || "All Services"],
       ]);
 
       res.status(201).json({
