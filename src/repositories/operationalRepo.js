@@ -752,7 +752,7 @@ async function upsertAssignmentConfig(tenantId, body) {
 
 async function listActiveEmployees(tenantId) {
   const result = await pool.query(
-    `SELECT * FROM employees WHERE tenant_id = $1 AND status = 'active' ORDER BY created_at ASC`,
+    `SELECT * FROM employees WHERE (tenant_id = $1 OR tenant_id IS NULL) AND (status IS NULL OR LOWER(status) = 'active' OR status = '') ORDER BY id ASC`,
     [tenantId],
   );
   return result.rows.map(mapEmployee);

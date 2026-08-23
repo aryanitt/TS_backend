@@ -21,9 +21,15 @@ function actor(req) {
 
 function normalizeLeadInput(input = {}) {
   const name = input.leadName || input.lead_name || input.name || input.contactName;
-  const rawServices = input.services || input.service || input.serviceName || "";
+  const rawServices = input.services || input.service || input.serviceName || input.service_name || "";
   const servicesFormatted = Array.isArray(rawServices) ? rawServices.join(", ") : String(rawServices || "");
-  let notesAndReqs = input.requirements || input.notes || "";
+  
+  const reqParts = [];
+  if (input.requirements) reqParts.push(String(input.requirements));
+  if (input.notes && String(input.notes) !== String(input.requirements)) reqParts.push(`Notes: ${input.notes}`);
+  if (input.sop || input.sopName) reqParts.push(`SOP: ${input.sop || input.sopName}`);
+  
+  let notesAndReqs = reqParts.join(" | ");
   if (servicesFormatted && !notesAndReqs.includes(servicesFormatted)) {
     notesAndReqs = notesAndReqs ? `[Service: ${servicesFormatted}] ${notesAndReqs}` : `Service: ${servicesFormatted}`;
   }
@@ -36,7 +42,7 @@ function normalizeLeadInput(input = {}) {
     city: input.city || "",
     country: input.country || "India",
     source: normalizeSource(input.source || input.channel || "n8n"),
-    formName: input.formName || input.form_name,
+    formName: input.formName || input.form_name || (servicesFormatted ? servicesFormatted : "n8n Webhook"),
     pipelineStage: input.pipelineStage || input.pipeline_stage || "new",
     temperature: normalizeTemperature(input.temperature || input.status || input.priority),
     status: input.status || "New Lead",
@@ -50,6 +56,10 @@ function normalizeLeadInput(input = {}) {
       ...(input.channel ? { channel: input.channel } : {}),
       ...(input.source ? { source: input.source } : {}),
       ...(servicesFormatted ? { services: servicesFormatted } : {}),
+      ...(input.sop || input.sopName ? { sop: input.sop || input.sopName } : {}),
+      ...(input.meetLink || input.meet_link ? { meetLink: input.meetLink || input.meet_link } : {}),
+      ...(input.scheduledAt || input.scheduled_at ? { scheduledAt: input.scheduledAt || input.scheduled_at } : {}),
+      ...(input.employeeName || input.employee_name ? { employeeName: input.employeeName || input.employee_name } : {}),
     },
   };
 }
