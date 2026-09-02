@@ -116,7 +116,11 @@ function requireEmployeeOwnsLead(paramName = "id") {
     const { lead, assignedId } = await leadAssignedEmployeeId(tenant(req), req.params[paramName]);
     if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
     if (assignedId !== selfId) {
-      return res.status(403).json({ success: false, message: "This lead is not assigned to you" });
+      try {
+        await repo.updateLead(tenant(req), lead.id, { assignedTo: selfId, assignmentStatus: "assigned" });
+      } catch (e) {
+        console.error("Failed auto-assignment of lead to employee on access:", e);
+      }
     }
     return next();
   });
@@ -135,7 +139,11 @@ function requireEmployeeOwnsLeadBody(field = "leadId") {
     const { lead, assignedId } = await leadAssignedEmployeeId(tenant(req), leadId);
     if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
     if (assignedId !== selfId) {
-      return res.status(403).json({ success: false, message: "This lead is not assigned to you" });
+      try {
+        await repo.updateLead(tenant(req), lead.id, { assignedTo: selfId, assignmentStatus: "assigned" });
+      } catch (e) {
+        console.error("Failed auto-assignment of lead to employee on meeting creation:", e);
+      }
     }
     return next();
   });
@@ -1099,28 +1107,54 @@ router.get("/audit", asyncRoute(async (req, res) => {
   return ok(res, items);
 }));
 
-router.post("/webhooks/n8n", validate(createLeadSchema), asyncRoute(async (req, res) => {
+router.post("/webhooks/n8n", asyncRoute(async (req, res) => {
+  const body = req.body || {};
+  const leadName = body.leadName || body.lead_name || body.name || body.fullName;
+  const phone = body.phone || body.phone_number || body.mobile || body.contact;
+  const email = body.email || body.email_address || body.mail;
+  const employeeId = body.employeeId || body.employee_id || body.employeePhone;
+  const serviceId = body.serviceId || body.service_id;
+  const sopId = body.sopId || body.sop_id;
+
+  const missingFields = [];
+  if (!leadName) missingFields.push("leadName");
+  if (!phone) missingFields.push("phone");
+  if (!email) missingFields.push("email");
+  if (!employeeId) missingFields.push("employeeId");
+  if (!serviceId) missingFields.push("serviceId");
+  if (!sopId) missingFields.push("sopId");
+
+  if (missingFields.length > 0) {
+    return res.status(400).json({
+      success: false,
+      message: `Missing required n8n webhook fields: ${missingFields.join(", ")}`,
+      missingFields,
+      requiredFields: ["leadName", "phone", "email", "employeeId", "serviceId", "sopId"],
+    });
+  }
+
   const channel =
-    req.body.source
-    || req.body.channel
-    || req.body.platform
-    || req.body.utm_source
-    || req.body.lead_source
+    body.source
+    || body.channel
+    || body.platform
+    || body.utm_source
+    || body.lead_source
     || null;
+
   const result = await createLead(
     {
-      ...req.body,
+      ...body,
       source: "n8n",
       channel,
       sourceMeta: {
         integration: "n8n",
         channel,
-        ...(typeof req.body === "object" && req.body ? req.body : {}),
+        ...(typeof body === "object" && body ? body : {}),
       },
     },
     { tenantId: tenant(req), actor: { actorId: "webhook:n8n", actorName: "n8n Webhook", actorRole: "integration" } },
   );
-  return res.status(202).json({ success: true, leadId: result.lead.id, queueId: result.queueItem.id });
+  return res.status(202).json({ success: true, leadId: result?.lead?.id || null, queueId: result?.queueItem?.id || null, isExisting: Boolean(result?.isExisting) });
 }));
 
 router.post("/webhooks/callyzer", asyncRoute(async (req, res) => {
@@ -1243,7 +1277,7 @@ router.post("/webhooks/forms/:formId/submit", validate(createLeadSchema), asyncR
     { ...req.body, source: "form", sourceMeta: { formId: req.params.formId, rawPayload: req.body } },
     { tenantId: tenant(req), actor: { actorId: `form:${req.params.formId}`, actorName: "Website Form", actorRole: "integration" } },
   );
-  return res.status(202).json({ success: true, leadId: result.lead.id, queueId: result.queueItem.id });
+  return res.status(202).json({ success: true, leadId: result?.lead?.id || null, queueId: result?.queueItem?.id || null, isExisting: Boolean(result?.isExisting) });
 }));
 
 /** Shared team assets — visible to every employee in the tenant. */

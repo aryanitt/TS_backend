@@ -566,8 +566,11 @@ async function generateRealAiInsights(tenantId = TENANT) {
 
     if (apiKey) {
       try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1500);
         const response = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
+          signal: controller.signal,
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${apiKey}`,
@@ -606,6 +609,7 @@ Return a JSON object:
             ],
           }),
         });
+        clearTimeout(timeoutId);
 
         if (response.ok) {
           const json = await response.json();
@@ -740,7 +744,15 @@ function emptyFilterData() {
   };
 }
 
+let dashboardBundleCache = {};
+
 async function getDashboardBundle(tenantId = TENANT) {
+  const now = Date.now();
+  const cacheKey = tenantId || "default";
+  if (dashboardBundleCache[cacheKey] && (now - dashboardBundleCache[cacheKey].timestamp < 15000)) {
+    return dashboardBundleCache[cacheKey].data;
+  }
+
   const empty = emptyFilterData();
 
   if (!(await dbReady())) {
@@ -816,7 +828,9 @@ async function getDashboardBundle(tenantId = TENANT) {
       rawCash: Number(r.cash_collected) || 0,
     }));
 
-    return { source: "database", filterData, revenueSeries, aiInsights, success: true };
+    const result = { source: "database", filterData, revenueSeries, aiInsights, success: true };
+    dashboardBundleCache[cacheKey] = { timestamp: Date.now(), data: result };
+    return result;
   } catch (err) {
     console.error("getDashboardBundle error:", err.message);
     return { source: "error", filterData: empty, revenueSeries: [], aiInsights: mock.aiInsights, success: true };
@@ -1155,23 +1169,72 @@ function cleanServiceName(raw) {
   return "";
 }
 
-async function ensureServiceExists(tenantId = TENANT, rawServiceName) {
-  const name = cleanServiceName(rawServiceName);
-  if (!name || name === "All Services") return null;
-  if (!(await dbReady())) return null;
+async function generateNextServiceId(tenantId = TENANT) {
+  try {
+    const res = await pool.query(
+      `SELECT service_code FROM services WHERE (tenant_id = $1 OR tenant_id IS NULL) AND service_code LIKE 'SRV-%'`,
+      [tenantId]
+    );
+    const codes = (res.rows || []).map(r => parseInt((r.service_code || "").replace("SRV-", ""), 10)).filter(n => !isNaN(n));
+    const nextNum = codes.length > 0 ? Math.max(...codes) + 1 : 1;
+    return `SRV-${String(nextNum).padStart(3, "0")}`;
+  } catch {
+    return `SRV-${String(Date.now()).slice(-3)}`;
+  }
+}
+
+async function generateNextSopId(tenantId = TENANT) {
+  try {
+    const res = await pool.query(
+      `SELECT sop_code FROM sops WHERE sop_code LIKE 'SOP-%'`
+    );
+    const codes = (res.rows || []).map(r => parseInt((r.sop_code || "").replace("SOP-", ""), 10)).filter(n => !isNaN(n));
+    const nextNum = codes.length > 0 ? Math.max(...codes) + 1 : 1;
+    return `SOP-${String(nextNum).padStart(3, "0")}`;
+  } catch {
+    return `SOP-${String(Date.now()).slice(-3)}`;
+  }
+}
+
+function normalizePhoneId(rawPhone) {
+  if (!rawPhone) return "";
+  const cleaned = String(rawPhone).replace(/\D/g, "");
+  return cleaned.length >= 10 ? cleaned.slice(-10) : cleaned;
+}
+
+async function ensureServiceExists(tenantId = TENANT, serviceNameInput) {
+  const name = cleanServiceName(serviceNameInput);
+  if (!name || !isValidServiceName(name)) return null;
 
   try {
-    // Check if blacklisted in deleted_services
-    const delCheck = await pool.query(
-      `SELECT 1 FROM deleted_services WHERE (tenant_id = $1 OR tenant_id IS NULL) AND LOWER(name) = LOWER($2) LIMIT 1`,
-      [tenantId, name]
+    // Ensure deleted_services table exists
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS deleted_services (
+        tenant_id VARCHAR(64) NOT NULL DEFAULT 'default',
+        service_id VARCHAR(128) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (tenant_id, name)
+      )`
     );
-    if (delCheck.rows && delCheck.rows.length > 0) {
+
+    // Get list of permanently deleted service names
+    const deletedRes = await pool.query(
+      `SELECT LOWER(name) AS name, LOWER(service_id) AS service_id FROM deleted_services WHERE (tenant_id = $1 OR tenant_id IS NULL)`,
+      [tenantId]
+    );
+    const deletedNamesSet = new Set();
+    (deletedRes.rows || []).forEach(r => {
+      if (r.name) deletedNamesSet.add(r.name.toLowerCase());
+      if (r.service_id) deletedNamesSet.add(r.service_id.toLowerCase());
+    });
+
+    if (deletedNamesSet.has(name.toLowerCase())) {
       return null; // Do NOT recreate deleted service!
     }
 
     const existing = await pool.query(
-      `SELECT * FROM services WHERE (tenant_id = $1 OR tenant_id IS NULL) AND LOWER(name) = LOWER($2) LIMIT 1`,
+      `SELECT * FROM services WHERE (tenant_id = $1 OR tenant_id IS NULL) AND (LOWER(name) = LOWER($2) OR service_code = $2) LIMIT 1`,
       [tenantId, name],
     );
     if (existing.rows && existing.rows.length > 0) {
@@ -1180,8 +1243,11 @@ async function ensureServiceExists(tenantId = TENANT, rawServiceName) {
 
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
     const id = `svc-${slug || Date.now()}`;
+    const serviceCode = await generateNextServiceId(tenantId);
     const newService = {
       id,
+      serviceCode,
+      serviceId: serviceCode,
       name,
       category: "general",
       categoryLabel: "General Services",
@@ -1208,29 +1274,17 @@ async function listServices(tenantId = TENANT) {
   if (!(await dbReady())) return { source: "empty", services: [], success: true };
 
   try {
-    // Ensure deleted_services table exists
-    await pool.query(
-      `CREATE TABLE IF NOT EXISTS deleted_services (
-        tenant_id VARCHAR(64) NOT NULL DEFAULT 'default',
-        service_id VARCHAR(128) NOT NULL,
-        name VARCHAR(255) NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (tenant_id, name)
-      )`
-    );
-
-    // Get list of permanently deleted service names
+    // 1) Auto-scan leads to populate catalog with active lead services
     const deletedRes = await pool.query(
       `SELECT LOWER(name) AS name, LOWER(service_id) AS service_id FROM deleted_services WHERE (tenant_id = $1 OR tenant_id IS NULL)`,
       [tenantId]
-    );
+    ).catch(() => ({ rows: [] }));
     const deletedNamesSet = new Set();
     (deletedRes.rows || []).forEach(r => {
       if (r.name) deletedNamesSet.add(r.name.toLowerCase());
       if (r.service_id) deletedNamesSet.add(r.service_id.toLowerCase());
     });
 
-    // 1) Scan leads for any service names that don't exist yet in services catalog (skipping deleted ones)
     const leadRows = await pool.query(
       `SELECT requirements, source_meta FROM leads WHERE (tenant_id = $1 OR tenant_id IS NULL) AND is_deleted = 0`,
       [tenantId],
@@ -1258,7 +1312,7 @@ async function listServices(tenantId = TENANT) {
       [tenantId],
     );
     let baseServices = result.rows.length
-      ? result.rows.filter((r) => isValidServiceName(r.name) && !deletedNamesSet.has((r.name || "").toLowerCase()) && !deletedNamesSet.has((r.id || "").toLowerCase()))
+      ? result.rows.filter((r) => isValidServiceName(r.name) && !deletedNamesSet.has((r.name || "").toLowerCase()) && !deletedNamesSet.has((r.id || "").toLowerCase()) && !deletedNamesSet.has((r.service_code || "").toLowerCase()))
       : mock.SERVICES.filter((r) => !deletedNamesSet.has((r.name || "").toLowerCase()) && !deletedNamesSet.has((r.id || "").toLowerCase()));
 
     // 3) Calculate actual lead metrics for each service
@@ -1271,6 +1325,7 @@ async function listServices(tenantId = TENANT) {
     const services = baseServices.map((r) => {
       const metaObj = (typeof r.metadata === "string" ? JSON.parse(r.metadata) : r.metadata) || {};
       const svcName = r.name || metaObj.name;
+      const sCode = r.service_code || metaObj.serviceCode || metaObj.serviceId || r.id;
       
       // Filter leads belonging to this service
       const matchingLeads = allLeads.filter((l) => {
@@ -1295,6 +1350,8 @@ async function listServices(tenantId = TENANT) {
       return {
         ...metaObj,
         id: r.id,
+        serviceId: sCode,
+        serviceCode: sCode,
         name: svcName,
         category: r.category || "general",
         categoryLabel: r.category_label || "General Services",
@@ -1322,11 +1379,13 @@ async function listServices(tenantId = TENANT) {
 
 async function createService(tenantId, data) {
   const id = data.id || `svc-${Date.now()}`;
-  const metadata = JSON.stringify(data);
+  const serviceCode = data.serviceCode || data.serviceId || await generateNextServiceId(tenantId);
+  const metadata = JSON.stringify({ ...data, serviceCode, serviceId: serviceCode });
   await pool.query(
-    `INSERT INTO services (id, tenant_id, name, category, category_label, status, description, revenue, leads, converted, conv_rate, price_num, price_label, icon, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+    `INSERT INTO services (id, service_code, tenant_id, name, category, category_label, status, description, revenue, leads, converted, conv_rate, price_num, price_label, icon, metadata)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
      ON DUPLICATE KEY UPDATE
+       service_code = COALESCE(services.service_code, VALUES(service_code)),
        name = VALUES(name),
        category = VALUES(category),
        category_label = VALUES(category_label),
@@ -1342,13 +1401,13 @@ async function createService(tenantId, data) {
        metadata = VALUES(metadata),
        updated_at = NOW()`,
     [
-      id, tenantId, data.name, data.category || "general", data.categoryLabel || "General Services",
+      id, serviceCode, tenantId, data.name, data.category || "general", data.categoryLabel || "General Services",
       data.status || "ACTIVE", data.description || "", data.revenue || 0,
       data.leads || 0, data.converted || 0, data.convRate || 0,
       data.priceNum || 0, data.price || "Custom", data.icon || "briefcase", metadata,
     ],
   );
-  return { success: true, service: { ...data, id } };
+  return { success: true, service: { ...data, id, serviceCode, serviceId: serviceCode } };
 }
 
 async function deleteService(tenantId = TENANT, serviceId) {
@@ -1710,6 +1769,8 @@ async function getIncentivesData(tenantId = TENANT, month) {
   };
 }
 
+let salesFunnelKpiCache = {};
+
 async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
   const {
     employee = "All Employees",
@@ -1719,6 +1780,12 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
     startDate,
     endDate,
   } = options;
+
+  const cacheKey = `${tenantId}_${employee}_${service}_${period}_${rangeKey}_${startDate}_${endDate}`;
+  const now = Date.now();
+  if (salesFunnelKpiCache[cacheKey] && (now - salesFunnelKpiCache[cacheKey].timestamp < 15000)) {
+    return salesFunnelKpiCache[cacheKey].data;
+  }
 
   // If DB not available, return empty zeros — no mock data
   if (!(await dbReady())) {
@@ -1872,14 +1939,12 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
 
   // Rates — kanban-scoped when available so Sales funnel matches Pipeline board
   const pickupRate = totalCalls > 0 ? Math.min(100, Math.round((connectedCalls / totalCalls) * 100)) : 0;
-  const qualRate = kanbanScopedLeads > 0
-    ? Math.min(100, Math.round((kanbanQualified / kanbanScopedLeads) * 100))
-    : (totalLeads > 0 ? Math.min(100, Math.round((qualifiedLeads / totalLeads) * 100)) : 0);
+  const qualRate = totalCalls > 0 ? Math.min(100, Math.round((meetingsDone / totalCalls) * 100)) : 0;
   const convRate = kanbanScopedLeads > 0
     ? Math.min(100, Math.round((kanbanConversions / kanbanScopedLeads) * 100))
     : (totalLeads > 0 ? Math.min(100, Math.round((convertedLeads / totalLeads) * 100)) : 0);
 
-  return {
+  const funnelResult = {
     success: true,
     source: "database",
     kpiData: [
@@ -1897,10 +1962,13 @@ async function getSalesFunnelKPIs(tenantId = TENANT, options = {}) {
     },
     metrics: [
       { label: "Pickup Rate",        shortLabel: "Pickup",  value: pickupRate, rgb: "124,58,237", desc: "Calls answered vs dialed",   trend: `${pickupRate}% pickup` },
-      { label: "Qualification Rate", shortLabel: "Qualify", value: qualRate,   rgb: "220,38,120", desc: "Qualified vs total leads",    trend: `${qualRate}% qualified` },
+      { label: "Qualification Rate", shortLabel: "Qualify", value: qualRate,   rgb: "220,38,120", desc: "Meetings done vs total calls", trend: `${qualRate}% qualified` },
       { label: "Conversion Rate",    shortLabel: "Convert", value: convRate,   rgb: "16,185,129", desc: "Closed deals vs total leads", trend: `${convRate}% converted` },
     ],
   };
+
+  salesFunnelKpiCache[cacheKey] = { timestamp: Date.now(), data: funnelResult };
+  return funnelResult;
 }
 
 

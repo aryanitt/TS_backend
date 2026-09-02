@@ -53,6 +53,16 @@ if (pool.pool && typeof pool.pool.on === "function") {
 
 logDbEnv("mysql env used by pool");
 
+// Pre-warm DB connection pool on boot to eliminate initial cold connection latency
+(async () => {
+  try {
+    await pool.query("SELECT 1");
+    console.error("[db] Connection pool pre-warmed successfully");
+  } catch (err) {
+    console.warn("[db] Connection pool pre-warming ping failed:", err.message);
+  }
+})();
+
 const coreQuery = promisify(pool.pool.query.bind(pool.pool));
 
 function transformSql(sql) {

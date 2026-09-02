@@ -593,6 +593,12 @@ async function initDatabase() {
     const indexes = [
       "CREATE INDEX idx_leads_tenant_assignment ON leads(tenant_id, assignment_status, created_at)",
       "CREATE INDEX idx_leads_tenant_assigned ON leads(tenant_id, assigned_to, pipeline_stage)",
+      "CREATE INDEX idx_leads_perf ON leads(tenant_id, is_deleted, created_at)",
+      "CREATE INDEX idx_leads_stage_perf ON leads(tenant_id, is_deleted, pipeline_stage)",
+      "CREATE INDEX idx_calls_perf ON employee_calls(tenant_id, started_at)",
+      "CREATE INDEX idx_calls_emp_perf ON employee_calls(tenant_id, employee_id, started_at)",
+      "CREATE INDEX idx_meetings_perf ON meetings(tenant_id, scheduled_at)",
+      "CREATE INDEX idx_cash_perf ON cash_collections(tenant_id, payment_at)",
       "CREATE INDEX idx_lead_queue_status ON lead_assignment_queue(tenant_id, status, priority, queued_at)",
       "CREATE INDEX idx_timeline_lead ON lead_timeline_events(tenant_id, lead_id, created_at)",
       "CREATE INDEX idx_emp_leads_submitted ON emp_leads(submitted_time)",

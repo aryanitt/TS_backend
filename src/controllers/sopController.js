@@ -273,7 +273,7 @@ async function listAllSops() {
         [id]
       );
   
-      if (result.rows.length === 0) {
+      if ((result.rowCount ?? 0) === 0 && (result.rows?.length ?? 0) === 0) {
         return res.status(404).json({
           success: false,
           message: "SOP not found",
@@ -439,7 +439,7 @@ async function listAllSops() {
         [commentId]
       );
   
-      if (result.rows.length === 0) {
+      if ((result.rowCount ?? 0) === 0 && (result.rows?.length ?? 0) === 0) {
         return res.status(404).json({
           success: false,
           message: "Comment not found",

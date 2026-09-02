@@ -41,7 +41,7 @@ function normalizeLeadInput(input = {}) {
     email: input.email || "",
     city: input.city || "",
     country: input.country || "India",
-    source: normalizeSource(input.source || input.channel || "n8n"),
+    source: normalizeSource(input.source || input.utm_source || input.channel || "n8n"),
     formName: input.formName || input.form_name || (servicesFormatted ? servicesFormatted : "n8n Webhook"),
     pipelineStage: input.pipelineStage || input.pipeline_stage || "new",
     temperature: normalizeTemperature(input.temperature || input.status || input.priority),
@@ -55,6 +55,11 @@ function normalizeLeadInput(input = {}) {
       ...(input.sourceMeta || input.rawPayload || {}),
       ...(input.channel ? { channel: input.channel } : {}),
       ...(input.source ? { source: input.source } : {}),
+      ...(input.utm_source ? { utm_source: input.utm_source } : {}),
+      ...(input.utm_medium ? { utm_medium: input.utm_medium } : {}),
+      ...(input.utm_campaign ? { utm_campaign: input.utm_campaign } : {}),
+      ...(input.utm_term ? { utm_term: input.utm_term } : {}),
+      ...(input.utm_content ? { utm_content: input.utm_content } : {}),
       ...(servicesFormatted ? { services: servicesFormatted } : {}),
       ...(input.sop || input.sopName ? { sop: input.sop || input.sopName } : {}),
       ...(input.meetLink || input.meet_link ? { meetLink: input.meetLink || input.meet_link } : {}),
@@ -144,6 +149,134 @@ const dataService = require("./dataService");
 
 async function createLead(input, options = {}) {
   const tenantId = options.tenantId || DEFAULT_TENANT_ID;
+
+  // 1. Extract & Normalize Identifiers
+  const rawEmail = input.email || input.email_address || input.mail;
+  const rawPhone = input.phone || input.phone_number || input.mobile || input.contact;
+  
+  const normEmail = rawEmail ? String(rawEmail).trim().toLowerCase() : "";
+  const normPhone = rawPhone ? String(rawPhone).replace(/\D/g, "") : "";
+
+  let existingLead = null;
+
+  // Step 1: Check Email First (Primary Identifier)
+  if (normEmail && normEmail.includes("@")) {
+    existingLead = await repo.findLeadByEmail(tenantId, normEmail);
+    if (existingLead) {
+      console.log(`[createLead] Duplicate match found via EMAIL: "${normEmail}" -> Existing Lead #${existingLead.id}`);
+    }
+  }
+
+  // Step 2: ONLY if Email is NOT available, Check Phone (Fallback Identifier)
+  if (!existingLead && !normEmail && normPhone && normPhone.length >= 10) {
+    existingLead = await repo.findLeadByPhone(tenantId, normPhone);
+    if (existingLead) {
+      console.log(`[createLead] Duplicate match found via PHONE: "${normPhone}" -> Existing Lead #${existingLead.id}`);
+    }
+  }
+
+  // =========================================================================
+  // EXISTING LEAD UPDATE FLOW (No Duplicate Creation)
+  // =========================================================================
+  if (existingLead) {
+    const updateFields = {};
+    const patchField = (key, val) => {
+      if (val !== undefined && val !== null && String(val).trim() !== "") {
+        updateFields[key] = val;
+      }
+    };
+
+    const rawLeadName = input.leadName || input.lead_name || input.name;
+    const rawCompany = input.companyName || input.company_name || input.company;
+    const rawCity = input.city;
+    const rawCountry = input.country;
+    const rawReqs = input.requirements || input.service || input.serviceName || input.service_name;
+    const rawNotes = input.notes;
+    const rawRev = input.expectedRevenue || input.expected_revenue || input.revenue;
+    const rawWinProb = input.winProbability || input.win_probability;
+    const rawStage = input.pipelineStage || input.pipeline_stage || input.stage;
+    const rawTemp = input.temperature;
+    const rawPriority = input.priority;
+
+    patchField("leadName", rawLeadName);
+    patchField("companyName", rawCompany);
+    patchField("city", rawCity);
+    patchField("country", rawCountry);
+    if (rawEmail) patchField("email", normEmail);
+    if (rawPhone) patchField("phone", rawPhone);
+    patchField("requirements", rawReqs);
+    patchField("notes", rawNotes);
+    if (rawRev) patchField("expectedRevenue", Number(rawRev));
+    if (rawWinProb) patchField("winProbability", Number(rawWinProb));
+    if (rawStage) patchField("pipelineStage", rawStage);
+    if (rawTemp) patchField("temperature", rawTemp);
+    if (rawPriority) patchField("priority", rawPriority);
+
+    // Merge source_meta cleanly
+    let mergedSourceMeta = existingLead.sourceMeta || {};
+    if (typeof mergedSourceMeta === "string") {
+      try { mergedSourceMeta = JSON.parse(mergedSourceMeta); } catch {}
+    }
+    mergedSourceMeta = {
+      ...mergedSourceMeta,
+      ...(typeof input === "object" && input ? input : {}),
+      lastUpdatedVia: input.source || "n8n",
+      updatedAt: new Date().toISOString(),
+    };
+    updateFields.sourceMeta = mergedSourceMeta;
+    updateFields.lastActivityAt = new Date();
+
+    // Perform Update (Preserving Lead ID & Existing Employee Assignment)
+    let updatedLead = await repo.updateLead(tenantId, existingLead.id, updateFields);
+    if (!updatedLead) updatedLead = existingLead;
+
+    // Check if meeting is provided in payload -> Link meeting to existing lead & assigned employee
+    const meetLink = input.meetLink || input.meet_link || input.meetingLink || input.meeting_link || input.meeting_url || input.google_meet_link;
+    const meetingTime = input.scheduledAt || input.scheduled_at || input.meetingTime || input.meeting_time || input.meeting_date;
+    const serviceName = input.services || input.service || input.serviceName || input.service_name || rawReqs;
+
+    if (meetLink || meetingTime) {
+      try {
+        const empId = updatedLead.assignedTo?.id || updatedLead.assigned_to;
+        if (empId) {
+          await createMeeting({
+            tenantId,
+            data: {
+              leadId: updatedLead.id,
+              employeeId: empId,
+              title: input.meetingTitle || input.meeting_title || (serviceName ? `Discovery Meeting: ${serviceName}` : `Lead Meeting - ${updatedLead.leadName}`),
+              scheduledAt: meetingTime ? new Date(meetingTime) : new Date(Date.now() + 3600 * 1000),
+              durationMin: Number(input.durationMin || input.duration_min || 30),
+              meetLink: meetLink || null,
+              location: meetLink ? "Google Meet" : (input.location || "Online"),
+              agenda: input.agenda || input.notes || `Initial discussion for ${updatedLead.leadName}`,
+              source: "lead",
+            },
+            actor: options.actor,
+          });
+        }
+      } catch (meetErr) {
+        console.error("[createLead] Auto create meeting error on existing lead:", meetErr);
+      }
+    }
+
+    await writeTimeline({
+      tenantId,
+      leadId: updatedLead.id,
+      type: "lead_updated",
+      summary: `Lead #${updatedLead.id} updated with new information from ${input.source || "n8n"}`,
+      payload: { source: input.source || "n8n", updateFields },
+      actor: options.actor,
+    });
+
+    emitTenant(tenantId, "lead.updated", updatedLead);
+    const finalLead = await repo.findLeadById(tenantId, updatedLead.id, { populate: true });
+    return { lead: finalLead || updatedLead, queueItem: null, isExisting: true };
+  }
+
+  // =========================================================================
+  // NEW LEAD CREATION FLOW (No Duplicate Found)
+  // =========================================================================
   const normalized = normalizeLeadInput(input);
   const lead = await repo.insertLead(tenantId, normalized);
 
@@ -173,51 +306,93 @@ async function createLead(input, options = {}) {
   const assignmentConfig = await getOrCreateAssignmentConfig(tenantId);
   const n8nAutoAssignEnabled = assignmentConfig?.n8nAutoAssignEnabled !== false;
 
-  // Priority 1: If n8n automation is enabled AND employee name/ID is provided -> assign to specified employee
-  const rawEmp = input.employeeId || input.employee_id || input.assignedTo || input.assigned_to || input.employeeName || input.employee_name || input.employee || input.rep_name || input.repName;
-  if (n8nAutoAssignEnabled && rawEmp) {
-    try {
-      const activeEmps = await repo.listActiveEmployees(tenantId);
-      let targetEmp = null;
-      if (!isNaN(rawEmp)) {
-        targetEmp = activeEmps.find((e) => Number(e.id) === Number(rawEmp));
-      }
-      if (!targetEmp && typeof rawEmp === "string") {
-        const needle = rawEmp.trim().toLowerCase();
-        targetEmp = activeEmps.find((e) => e.name.toLowerCase().includes(needle) || (e.email && e.email.toLowerCase().includes(needle)));
-      }
-      if (targetEmp) {
-        await assignLead({
-          tenantId,
-          leadId: lead.id,
-          employeeId: targetEmp.id,
-          method: "n8n_direct",
-          performedBy: options.actor?.actorId || "webhook:n8n",
-          reason: `Direct n8n assignment to ${targetEmp.name}`,
-          actor: options.actor,
-        });
-        assignedEmployeeId = targetEmp.id;
-      }
-    } catch (empErr) {
-      console.error("[createLead] Direct n8n employee assignment failed:", empErr);
+  // 1. Resolve Unique IDs if passed in payload
+  const rawServiceId = input.serviceId || input.service_id;
+  const rawSopId = input.sopId || input.sop_id;
+  const rawEmpId = input.employeeId || input.employee_id;
+  const rawEmpName = input.employeeName || input.employee_name || input.assignedTo || input.assigned_to || input.employee || input.repName || input.rep_name;
+
+  let resolvedService = null;
+  let resolvedSop = null;
+  let resolvedEmployee = null;
+  let invalidServiceId = false;
+  let invalidSopId = false;
+  let invalidEmployeeId = false;
+
+  if (rawServiceId) {
+    resolvedService = await repo.findServiceByIdCode(tenantId, rawServiceId);
+    if (!resolvedService) {
+      console.warn(`[createLead] Invalid serviceId received: ${rawServiceId}. Strict mode: ignoring name fallback.`);
+      invalidServiceId = true;
     }
   }
 
-  // Priority 2: If no employee name was matched/provided, BUT a service is provided -> use existing service-based assignment logic
-  if (!assignedEmployeeId && serviceName) {
+  if (rawSopId) {
+    resolvedSop = await repo.findSopByIdCode(tenantId, rawSopId);
+    if (!resolvedSop) {
+      console.warn(`[createLead] Invalid sopId received: ${rawSopId}. Strict mode: ignoring name fallback.`);
+      invalidSopId = true;
+    }
+  }
+
+  if (rawEmpId) {
+    resolvedEmployee = await repo.findEmployeeById(tenantId, rawEmpId);
+    if (!resolvedEmployee) {
+      console.warn(`[createLead] Invalid employeeId received: ${rawEmpId}. Strict mode: ignoring name fallback.`);
+      invalidEmployeeId = true;
+    }
+  }
+
+  // Fallback to employee name ONLY if explicit employeeId was NOT provided and invalid
+  if (!resolvedEmployee && !invalidEmployeeId && rawEmpName && n8nAutoAssignEnabled) {
     try {
       const activeEmps = await repo.listActiveEmployees(tenantId);
+      const needle = String(rawEmpName).trim().toLowerCase();
+      resolvedEmployee = activeEmps.find((e) => e.name.toLowerCase().includes(needle) || (e.email && e.email.toLowerCase().includes(needle)));
+    } catch (empErr) {
+      console.error("[createLead] Direct employee name lookup failed:", empErr);
+    }
+  }
+
+  // Priority 1: Direct Employee Assignment (via validated Employee ID or Name)
+  if (n8nAutoAssignEnabled && resolvedEmployee) {
+    try {
+      // Validate relationship: If service is also provided, check if employee belongs to service distribution or department
+      let isValidRelation = true;
+      if (resolvedService) {
+        const metaObj = (typeof resolvedService.metadata === "string" ? JSON.parse(resolvedService.metadata) : resolvedService.metadata) || {};
+        const distIds = Array.isArray(metaObj.distributionEmployeeIds) ? metaObj.distributionEmployeeIds.map(Number) : [];
+        if (distIds.length > 0 && !distIds.includes(Number(resolvedEmployee.id))) {
+          console.warn(`[createLead] Employee ${resolvedEmployee.name} is not in Service distribution list for ${resolvedService.name}. Direct assignment enforced per explicit request.`);
+        }
+      }
+
+      if (isValidRelation) {
+        await assignLead({
+          tenantId,
+          leadId: lead.id,
+          employeeId: resolvedEmployee.id,
+          method: "n8n_direct",
+          performedBy: options.actor?.actorId || "webhook:n8n",
+          reason: `Direct assignment to ${resolvedEmployee.name} (ID: ${resolvedEmployee.phone || resolvedEmployee.id})`,
+          actor: options.actor,
+        });
+        assignedEmployeeId = resolvedEmployee.id;
+      }
+    } catch (empErr) {
+      console.error("[createLead] Direct employee assignment failed:", empErr);
+    }
+  }
+
+  // Priority 2: Service-Based Assignment (via validated Service ID or Service Name)
+  if (!assignedEmployeeId && (resolvedService || (serviceName && !invalidServiceId))) {
+    try {
+      const activeEmps = await repo.listActiveEmployees(tenantId);
+      const targetSvcName = resolvedService ? resolvedService.name : serviceName;
       const { services = [] } = await dataService.listServices(tenantId);
-      const needleService = String(serviceName).trim().toLowerCase();
-      
-      const matchedSvc = services.find((s) => {
-        const sName = String(s.name || "").trim().toLowerCase();
-        return sName === needleService || sName.includes(needleService) || needleService.includes(sName);
-      });
+      const matchedSvc = services.find((s) => s.id === resolvedService?.id || s.serviceId === rawServiceId || String(s.name).toLowerCase() === String(targetSvcName).toLowerCase());
 
       let serviceEmp = null;
-
-      // Check if service has configured distribution employees
       if (matchedSvc && matchedSvc.distributionEnabled && Array.isArray(matchedSvc.distributionEmployeeIds) && matchedSvc.distributionEmployeeIds.length > 0) {
         const eligibleIds = matchedSvc.distributionEmployeeIds.map(Number);
         const candidates = activeEmps.filter((e) => eligibleIds.includes(Number(e.id)));
@@ -226,8 +401,8 @@ async function createLead(input, options = {}) {
         }
       }
 
-      // Fallback: match employee by department / role matching service name
-      if (!serviceEmp) {
+      if (!serviceEmp && targetSvcName) {
+        const needleService = String(targetSvcName).trim().toLowerCase();
         serviceEmp = activeEmps.find((e) => {
           const dept = String(e.department || e.role || "").toLowerCase();
           return dept && (dept.includes(needleService) || needleService.includes(dept));
@@ -241,7 +416,7 @@ async function createLead(input, options = {}) {
           employeeId: serviceEmp.id,
           method: "service_based",
           performedBy: options.actor?.actorId || "system:service_router",
-          reason: `Service-based assignment for ${serviceName}`,
+          reason: `Service-based assignment for ${targetSvcName} (${matchedSvc?.serviceId || "SRV"})`,
           actor: options.actor,
         });
         assignedEmployeeId = serviceEmp.id;

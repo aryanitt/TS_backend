@@ -72,12 +72,14 @@ function mapLead(row, assignedEmployee) {
 
 function mapEmployee(row) {
   if (!row) return null;
+  const normPhone = row.phone ? String(row.phone).replace(/\D/g, "").slice(-10) : null;
   return withId({
     id: row.id,
+    employeeId: normPhone || String(row.id),
     tenantId: row.tenant_id,
     name: row.name,
     email: row.email,
-    phone: row.phone,
+    phone: normPhone || row.phone,
     role: row.role,
     department: row.department,
     status: row.status,
@@ -397,13 +399,29 @@ async function findLeadById(tenantId, leadId, { populate = false } = {}) {
   return populate ? mapLead(row, joinEmployee(row)) : mapLead(row);
 }
 
+async function findLeadByEmail(tenantId, email, { assignedTo } = {}) {
+  const normEmail = String(email || "").trim().toLowerCase();
+  if (!normEmail || !normEmail.includes("@")) return null;
+
+  const params = [tenantId, normEmail];
+  let sql = `SELECT * FROM leads WHERE (tenant_id = $1 OR tenant_id IS NULL) AND is_deleted = 0 AND LOWER(email) = $2`;
+  if (assignedTo != null) {
+    sql += ` AND assigned_to = $3`;
+    params.push(assignedTo);
+  }
+  sql += ` ORDER BY id DESC LIMIT 1`;
+
+  const result = await pool.query(sql, params);
+  return mapLead(result.rows[0]);
+}
+
 async function findLeadByPhone(tenantId, phone, { assignedTo } = {}) {
   const digits = String(phone || "").replace(/\D/g, "");
   const last10 = digits.slice(-10);
   if (!last10 || last10.length < 10) return null;
 
   const params = [tenantId, `%${last10}`];
-  let sql = `SELECT * FROM leads WHERE tenant_id = $1 AND is_deleted = 0 AND phone LIKE $2`;
+  let sql = `SELECT * FROM leads WHERE (tenant_id = $1 OR tenant_id IS NULL) AND is_deleted = 0 AND phone LIKE $2`;
   if (assignedTo != null) {
     sql += ` AND assigned_to = $3`;
     params.push(assignedTo);
@@ -780,11 +798,32 @@ async function listEmployees(tenantId, filters = {}) {
 }
 
 async function findEmployeeById(tenantId, employeeId) {
+  if (!employeeId) return null;
+  const cleanedPhone = String(employeeId).replace(/\D/g, "");
+  const normPhone = cleanedPhone.length >= 10 ? cleanedPhone.slice(-10) : cleanedPhone;
   const result = await pool.query(
-    `SELECT * FROM employees WHERE id = $1 AND tenant_id = $2`,
-    [employeeId, tenantId],
+    `SELECT * FROM employees WHERE (id = $1 OR phone = $1 OR phone = $2) AND (tenant_id = $3 OR tenant_id IS NULL) LIMIT 1`,
+    [isNaN(employeeId) ? -1 : Number(employeeId), normPhone || String(employeeId), tenantId],
   );
   return mapEmployee(result.rows[0]);
+}
+
+async function findServiceByIdCode(tenantId, codeOrId) {
+  if (!codeOrId) return null;
+  const result = await pool.query(
+    `SELECT * FROM services WHERE (tenant_id = $1 OR tenant_id IS NULL) AND (service_code = $2 OR id = $2) LIMIT 1`,
+    [tenantId, String(codeOrId).trim()],
+  );
+  return result.rows[0] || null;
+}
+
+async function findSopByIdCode(tenantId, codeOrId) {
+  if (!codeOrId) return null;
+  const result = await pool.query(
+    `SELECT * FROM sops WHERE (sop_code = $1 OR CAST(id AS CHAR) = $1) LIMIT 1`,
+    [String(codeOrId).trim()],
+  );
+  return result.rows[0] || null;
 }
 
 async function createEmployee(tenantId, data) {
@@ -1761,6 +1800,7 @@ module.exports = {
   ping,
   insertLead,
   findLeadById,
+  findLeadByEmail,
   findLeadByPhone,
   listLeads,
   listAllLeads,
@@ -1781,6 +1821,8 @@ module.exports = {
   listActiveEmployees,
   listEmployees,
   findEmployeeById,
+  findServiceByIdCode,
+  findSopByIdCode,
   createEmployee,
   updateEmployee,
   incrementEmployeeLeads,

@@ -38,6 +38,11 @@ const createLeadSchema = z.object({
   insights: z.string().optional(),
   sourceMeta: z.record(z.any()).optional(),
   rawPayload: z.any().optional(),
+  utm_source: z.string().optional(),
+  utm_medium: z.string().optional(),
+  utm_campaign: z.string().optional(),
+  utm_term: z.string().optional(),
+  utm_content: z.string().optional(),
 }).passthrough();
 
 const assignSchema = z.object({
