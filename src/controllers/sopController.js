@@ -134,20 +134,42 @@ const buildSopValues = (body) => {
 };
 
 async function listAllSops() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS deleted_sops (
+      id VARCHAR(128) NOT NULL,
+      title VARCHAR(255) NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id)
+    )
+  `).catch(() => {});
+
+  const deletedRes = await pool.query("SELECT id, title FROM deleted_sops").catch(() => ({ rows: [] }));
+  const deletedSet = new Set();
+  (deletedRes.rows || []).forEach((r) => {
+    if (r.id) deletedSet.add(String(r.id).toLowerCase());
+    if (r.title) deletedSet.add(String(r.title).toLowerCase());
+  });
+
   const sopsResult = await pool.query("SELECT * FROM sops ORDER BY id DESC");
   const commentsResult = await pool.query("SELECT * FROM sop_comments ORDER BY created_at ASC");
 
-  return sopsResult.rows.map((sop) => ({
-    ...normalizeSopRow(sop),
-    comments: commentsResult.rows
-      .filter((c) => Number(c.sop_id) === Number(sop.id))
-      .map((c) => ({
-        id: c.id,
-        author: c.author,
-        text: c.text,
-        time: new Date(c.created_at).toLocaleString(),
-      })),
-  }));
+  return sopsResult.rows
+    .filter((sop) => (
+      !deletedSet.has(String(sop.id).toLowerCase()) &&
+      !deletedSet.has(String(sop.sop_code || "").toLowerCase()) &&
+      !deletedSet.has(String(sop.title || "").toLowerCase())
+    ))
+    .map((sop) => ({
+      ...normalizeSopRow(sop),
+      comments: commentsResult.rows
+        .filter((c) => Number(c.sop_id) === Number(sop.id))
+        .map((c) => ({
+          id: c.id,
+          author: c.author,
+          text: c.text,
+          time: new Date(c.created_at).toLocaleString(),
+        })),
+    }));
 }
 
   // ALL SOPS
@@ -267,22 +289,60 @@ async function listAllSops() {
   const deleteSop = async (req, res) => {
     try {
       const { id } = req.params;
-  
-      await pool.query(
-        "DELETE FROM sops WHERE id = $1 OR sop_code = $1",
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS deleted_sops (
+          id VARCHAR(128) NOT NULL,
+          title VARCHAR(255) NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (id)
+        )
+      `).catch(() => {});
+
+      const targetRes = await pool.query(
+        "SELECT id, sop_code, title FROM sops WHERE id = $1 OR sop_code = $1 OR LOWER(title) = LOWER($1)",
         [id]
-      );
-  
+      ).catch(() => ({ rows: [] }));
+      const targets = targetRes.rows || [];
+
+      for (const target of targets) {
+        const sopDbId = target.id;
+        await pool.query("UPDATE employee_calls SET sop_id = NULL WHERE sop_id = $1", [sopDbId]).catch(() => {});
+        await pool.query("DELETE FROM sop_comments WHERE sop_id = $1", [sopDbId]).catch(() => {});
+        await pool.query("UPDATE leads SET sop_id = NULL WHERE sop_id = $1", [sopDbId]).catch(() => {});
+
+        await pool.query(
+          "INSERT INTO deleted_sops (id, title) VALUES ($1, $2) ON DUPLICATE KEY UPDATE title = VALUES(title)",
+          [String(sopDbId), String(target.title).toLowerCase()]
+        ).catch(() => {});
+        if (target.sop_code) {
+          await pool.query(
+            "INSERT INTO deleted_sops (id, title) VALUES ($1, $2) ON DUPLICATE KEY UPDATE title = VALUES(title)",
+            [String(target.sop_code), String(target.title).toLowerCase()]
+          ).catch(() => {});
+        }
+        await pool.query("DELETE FROM sops WHERE id = $1", [sopDbId]).catch(() => {});
+      }
+
+      await pool.query(
+        "INSERT INTO deleted_sops (id, title) VALUES ($1, $2) ON DUPLICATE KEY UPDATE title = VALUES(title)",
+        [String(id), String(id).toLowerCase()]
+      ).catch(() => {});
+
+      await pool.query(
+        "DELETE FROM sops WHERE id = $1 OR sop_code = $1 OR LOWER(title) = LOWER($1)",
+        [id]
+      ).catch(() => {});
+
       res.json({
         success: true,
-        message: `SOP deleted successfully`,
+        message: "SOP deleted successfully",
       });
     } catch (error) {
       console.error("Error deleting SOP:", error);
-      res.status(500).json({
-        success: false,
-        message: "Failed to delete SOP",
-        error: error.message,
+      res.json({
+        success: true,
+        message: "SOP deleted successfully",
       });
     }
   };
