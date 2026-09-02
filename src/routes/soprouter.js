@@ -37,6 +37,7 @@ router.put("/update/:id", updateSop);
 
 // DELETE SOP
 router.delete("/delete/:id", deleteSop);
+router.delete("/:id", deleteSop);
 
 //duplicate sop
 router.post("/duplicate/:id", duplicateSop);

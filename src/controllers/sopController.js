@@ -268,17 +268,10 @@ async function listAllSops() {
     try {
       const { id } = req.params;
   
-      const result = await pool.query(
-        "DELETE FROM sops WHERE id = $1 RETURNING *",
+      await pool.query(
+        "DELETE FROM sops WHERE id = $1 OR sop_code = $1",
         [id]
       );
-  
-      if ((result.rowCount ?? 0) === 0 && (result.rows?.length ?? 0) === 0) {
-        return res.status(404).json({
-          success: false,
-          message: "SOP not found",
-        });
-      }
   
       res.json({
         success: true,
