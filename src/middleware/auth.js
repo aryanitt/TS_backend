@@ -6,6 +6,8 @@ const PUBLIC_API_PREFIXES = [
   "/api/v1/webhooks/callyzer",
   "/api/v1/webhooks/n8n",
   "/api/v1/webhooks/forms",
+  "/api/sop",
+  "/api/v1/sops",
 ];
 
 function isPublicApiPath(path) {
