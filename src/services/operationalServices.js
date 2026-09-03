@@ -260,7 +260,8 @@ async function createLead(input, options = {}) {
 
     if (meetLink || meetingTime) {
       try {
-        const empId = updatedLead.assignedTo?.id || updatedLead.assigned_to;
+        const getEmpId = (val) => (val && typeof val === "object" ? val.id || val._id : val);
+        const empId = getEmpId(updatedLead.assignedTo) || getEmpId(updatedLead.assigned_to) || getEmpId(existingLead.assignedTo) || getEmpId(existingLead.assigned_to);
         if (empId) {
           await createMeeting({
             tenantId,
@@ -466,7 +467,9 @@ async function createLead(input, options = {}) {
   const meetingTime = input.scheduledAt || input.scheduled_at || input.meetingTime || input.meeting_time || input.meeting_date;
   if (meetLink || meetingTime) {
     try {
-      const empId = assignedEmployeeId || (await repo.findLeadById(tenantId, lead.id))?.assignedTo?.id;
+      const getEmpId = (val) => (val && typeof val === "object" ? val.id || val._id : val);
+      const fetchedLead = await repo.findLeadById(tenantId, lead.id);
+      const empId = assignedEmployeeId || getEmpId(fetchedLead?.assignedTo) || getEmpId(fetchedLead?.assigned_to);
       if (empId) {
         await createMeeting({
           tenantId,
