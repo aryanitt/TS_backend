@@ -433,7 +433,7 @@ async function findLeadByPhone(tenantId, phone, { assignedTo } = {}) {
 }
 
 async function listLeads(tenantId, filters = {}, { page = 1, limit = 50 } = {}) {
-  const conditions = ["l.tenant_id = $1", "l.is_deleted = 0"];
+  const conditions = ["(l.tenant_id = $1 OR l.tenant_id = 'default' OR l.tenant_id = '1' OR l.tenant_id IS NULL)", "l.is_deleted = 0"];
   const params = [tenantId];
   let idx = 2;
 

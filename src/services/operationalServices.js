@@ -226,7 +226,30 @@ async function createLead(input, options = {}) {
     updateFields.sourceMeta = mergedSourceMeta;
     updateFields.lastActivityAt = new Date();
 
-    // Perform Update (Preserving Lead ID & Existing Employee Assignment)
+    // Re-assign or update employee assignment if employeeId or employeeName is provided in input
+    const rawEmpId = input.employeeId || input.employee_id;
+    const rawEmpName = input.employeeName || input.employee_name || input.employee;
+    if (rawEmpId || rawEmpName) {
+      let targetEmp = null;
+      if (rawEmpId) {
+        targetEmp = await repo.findEmployeeById(tenantId, rawEmpId);
+      }
+      if (!targetEmp && rawEmpName) {
+        try {
+          const activeEmps = await repo.listActiveEmployees(tenantId);
+          const needle = String(rawEmpName).trim().toLowerCase();
+          targetEmp = activeEmps.find((e) => e.name.toLowerCase().includes(needle) || (e.email && e.email.toLowerCase().includes(needle)));
+        } catch (e) {}
+      }
+      if (targetEmp) {
+        updateFields.assignedTo = targetEmp.id;
+        updateFields.assignmentStatus = "assigned";
+        updateFields.assignedAt = new Date();
+        updateFields.assignmentMethod = "n8n_direct";
+      }
+    }
+
+    // Perform Update (Updating Lead ID & Employee Assignment)
     let updatedLead = await repo.updateLead(tenantId, existingLead.id, updateFields);
     if (!updatedLead) updatedLead = existingLead;
 
